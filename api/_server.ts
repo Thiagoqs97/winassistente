@@ -98,6 +98,7 @@ async function initDB() {
       );
     `);
 
+    await client.query(`ALTER TABLE sessoes ADD COLUMN IF NOT EXISTS ultimos_produtos JSONB;`);
     await client.query(`ALTER TABLE sessoes DISABLE ROW LEVEL SECURITY;`);
     await client.query(`ALTER TABLE mensagens DISABLE ROW LEVEL SECURITY;`);
 
@@ -427,6 +428,21 @@ async function sendWhatsAppMessage(number: string, text: string) {
   }
 }
 
+// Detecta mensagens curtas de confirmação afirmativa do vendedor.
+// Usada para evitar que o extrator reclassifique "Sim" como NEW_SESSION/unknown.
+function isAffirmativeConfirmation(text: string): boolean {
+  const normalized = text.trim().toLowerCase().replace(/[!.?,]+$/g, '');
+  if (normalized.length === 0 || normalized.length > 40) return false;
+  return /^(sim|s|isso|isso\s+mesmo|confirmo|confirmado|pode\s+(gerar|ser|seguir|fazer)|ok|okay|👍|certo|exato|perfeito|fechado|beleza|blz|positivo|afirmativo|claro|com\s+certeza)$/.test(normalized);
+}
+
+// Detecta se a última mensagem do assistente pediu confirmação dos itens.
+function lastAssistantAskedForConfirmation(history: { role: string; content: string }[]): boolean {
+  const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
+  if (!lastAssistant) return false;
+  return /confirme|esses\s+s[ãa]o\s+os\s+produtos|produtos\s+certos|identifiquei\s+os\s+seguintes/i.test(lastAssistant.content);
+}
+
 // 10. Evolution API Webhook
 app.post('/api/webhook/evolution', async (req, res) => {
   const event = req.body;
@@ -562,55 +578,87 @@ app.post('/api/webhook/evolution', async (req, res) => {
       content: row.conteudo,
     }));
 
-    // Extract product terms with GPT-4o-mini
-    const extractResponse = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: 'Given the user message and history, extract a comma-separated list of ONLY the product names the user wants to buy/query. If they explicitly state they want to start a new order/session, add "NEW_SESSION" to the list. If no product is mentioned and no new session, return "unknown".',
-        },
-        ...historyMessages,
-        { role: 'user', content: incomingText },
-      ],
-    });
+    // Fast-path: se o vendedor está confirmando o orçamento que o bot acabou de pedir,
+    // pulamos o extrator (evita NEW_SESSION/unknown falso-positivo) e reusamos os produtos
+    // já apresentados na pergunta anterior.
+    const isConfirmingPrevious =
+      isAffirmativeConfirmation(incomingText) &&
+      lastAssistantAskedForConfirmation(historyMessages);
 
-    const extractedContent = extractResponse.choices[0].message.content || 'unknown';
+    let searchResults: any[] = [];
 
-    if (extractedContent.includes('NEW_SESSION')) {
-      await pool.query(`UPDATE sessoes SET status = 'encerrada', encerrada_em = NOW() WHERE id = $1`, [currentSessionId]);
-      const { rows: newSessionRows } = await pool.query(
-        `INSERT INTO sessoes (vendedor_id) VALUES ($1) RETURNING id`,
-        [vendedorId]
+    if (isConfirmingPrevious) {
+      const { rows: sessRows } = await pool.query(
+        `SELECT ultimos_produtos FROM sessoes WHERE id = $1`,
+        [currentSessionId]
       );
-      currentSessionId = newSessionRows[0].id;
-      historyMessages = [];
+      searchResults = sessRows[0]?.ultimos_produtos || [];
+      console.log(`Confirmação detectada — reusando ${searchResults.length} produtos da última busca.`);
+    } else {
+      // Extract product terms with GPT-4o-mini
+      const extractResponse = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You receive a vendor message plus chat history. Return a comma-separated list with ONLY the product names the vendor wants to buy/query right now. ' +
+              'Add "NEW_SESSION" to the list ONLY when the vendor EXPLICITLY says they want to abandon the current order and start a brand-new one — e.g. "novo pedido", "começar de novo", "esquece esse pedido", "cancela tudo", "outro pedido do zero". ' +
+              'Short affirmative replies like "sim", "ok", "confirmo", "isso", "pode gerar", "👍" are NEVER a new session — they confirm the previous question. In those cases return "unknown". ' +
+              'If no product is mentioned and there is no explicit reset request, return "unknown".',
+          },
+          ...historyMessages,
+          { role: 'user', content: incomingText },
+        ],
+      });
+
+      const extractedContent = extractResponse.choices[0].message.content || 'unknown';
+
+      if (extractedContent.includes('NEW_SESSION')) {
+        await pool.query(`UPDATE sessoes SET status = 'encerrada', encerrada_em = NOW() WHERE id = $1`, [currentSessionId]);
+        const { rows: newSessionRows } = await pool.query(
+          `INSERT INTO sessoes (vendedor_id) VALUES ($1) RETURNING id`,
+          [vendedorId]
+        );
+        currentSessionId = newSessionRows[0].id;
+        historyMessages = [];
+      }
+
+      // Fuzzy Search (pg_trgm)
+      const termsToSearch = extractedContent
+        .split(',')
+        .map(s => s.replace('NEW_SESSION', '').trim())
+        .filter(s => s.length > 0 && s !== 'unknown');
+
+      for (const term of termsToSearch) {
+        const { rows } = await pool.query(`
+          SELECT id, codigo, descricao, preco_venda, marca, embalagem,
+                 similarity(descricao, $1) as sml
+          FROM products
+          WHERE ativo = true AND similarity(descricao, $1) > 0.1
+          ORDER BY similarity(descricao, $1) DESC
+          LIMIT 5
+        `, [term]);
+        searchResults = searchResults.concat(rows);
+      }
+
+      // Persiste os produtos encontrados na sessão para que uma confirmação posterior
+      // ("Sim", "Confirmo", etc.) consiga reusá-los sem precisar buscar de novo.
+      if (searchResults.length > 0) {
+        await pool.query(
+          `UPDATE sessoes SET ultimos_produtos = $1 WHERE id = $2`,
+          [JSON.stringify(searchResults), currentSessionId]
+        );
+      }
     }
 
+    // Registra a mensagem do vendedor APÓS o fluxo de extração/confirmação,
+    // mas usando o currentSessionId final (que pode ter sido trocado por NEW_SESSION).
     await pool.query(
       `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
       [currentSessionId, vendedorId, 'user', incomingText, tipoMidia]
     );
     historyMessages.push({ role: 'user', content: incomingText });
-
-    // Fuzzy Search (pg_trgm)
-    let searchResults: any[] = [];
-    const termsToSearch = extractedContent
-      .split(',')
-      .map(s => s.replace('NEW_SESSION', '').trim())
-      .filter(s => s.length > 0 && s !== 'unknown');
-
-    for (const term of termsToSearch) {
-      const { rows } = await pool.query(`
-        SELECT id, codigo, descricao, preco_venda, marca, embalagem,
-               similarity(descricao, $1) as sml
-        FROM products
-        WHERE ativo = true AND similarity(descricao, $1) > 0.1
-        ORDER BY similarity(descricao, $1) DESC
-        LIMIT 5
-      `, [term]);
-      searchResults = searchResults.concat(rows);
-    }
 
     // Build final response
     const finalPrompt = `Você é o assistente virtual da Win Distribuidora, atendendo representantes de vendas via WhatsApp.
