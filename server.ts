@@ -130,8 +130,9 @@ function ensureDB() {
   return dbInitPromise;
 }
 
-// Middleware: ensure DB is ready before any request
-app.use(async (_req, _res, next) => {
+// Middleware: ensure DB is ready before any request (skip for webhook — it inits DB internally after responding)
+app.use(async (req, _res, next) => {
+  if (req.path === '/api/webhook/evolution') return next();
   try {
     await ensureDB();
     next();
@@ -142,14 +143,16 @@ app.use(async (_req, _res, next) => {
 
 // --- API ROUTES ---
 
-// 1. Upload Stock (XLSX)
-app.post('/api/upload-stock', upload.single('file'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'Nenhum arquivo enviado' });
-  }
-
+// 1. Upload Stock (XLSX) — recebe base64 via JSON para compatibilidade com Vercel serverless
+app.post('/api/upload-stock', async (req, res) => {
   try {
-    const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
+    const { fileData } = req.body;
+    if (!fileData) {
+      return res.status(400).json({ error: 'Nenhum arquivo enviado' });
+    }
+
+    const buffer = Buffer.from(fileData, 'base64');
+    const workbook = xlsx.read(buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     const rawData = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, any>[];
@@ -158,120 +161,137 @@ app.post('/api/upload-stock', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'Planilha vazia ou formato não reconhecido' });
     }
 
-    // Log das colunas encontradas para debug
-    console.log('Colunas encontradas na planilha:', Object.keys(rawData[0]));
+    console.log('Colunas encontradas:', Object.keys(rawData[0]));
 
+    // Fix 2: busca dinâmica com trim + lowercase + match parcial
     const getVal = (row: Record<string, any>, exactKeys: string[], partialKeys: string[]) => {
-      const rowKeysLower = Object.keys(row).map(k => ({ original: k, lower: k.trim().toLowerCase() }));
-      let match = rowKeysLower.find(({ lower }) =>
-        exactKeys.some(ek => lower === ek.toLowerCase())
-      );
-      if (!match) {
-        match = rowKeysLower.find(({ lower }) =>
-          partialKeys.some(pk => lower.includes(pk.toLowerCase()))
-        );
-      }
-      return match ? row[match.original] : null;
+      const keys = Object.keys(row).map(k => ({ original: k, lower: k.trim().toLowerCase() }));
+      const exact = keys.find(({ lower }) => exactKeys.some(ek => lower === ek.toLowerCase()));
+      if (exact) return row[exact.original];
+      const partial = keys.find(({ lower }) => partialKeys.some(pk => lower.includes(pk.toLowerCase())));
+      return partial ? row[partial.original] : null;
     };
 
+    // Fix 1: parse de preço brasileiro (R$ 1.234,50 → 1234.50)
     const parsePreco = (val: any): number | null => {
       if (val === null || val === undefined || val === '') return null;
       if (typeof val === 'number') return isFinite(val) ? val : null;
-      const cleaned = String(val).replace(/R\$\s*/gi, '').replace(/\./g, '').replace(',', '.').replace(/[^0-9.-]/g, '');
+      // Remove "R$", espaços, pontos de milhar; troca vírgula decimal por ponto
+      const cleaned = String(val)
+        .replace(/R\$\s*/gi, '')
+        .trim()
+        .replace(/\./g, '')
+        .replace(',', '.')
+        .replace(/[^0-9.-]/g, '');
       const n = parseFloat(cleaned);
-      return isFinite(n) ? n : null;
+      return isFinite(n) && n > 0 ? n : null;
+    };
+
+    // Fix 3: resolve marca que vem como ID numérico — busca coluna vizinha textual
+    const getMarca = (row: Record<string, any>): string | null => {
+      const keys = Object.keys(row);
+      const marcaKeys = keys.filter(k => k.trim().toLowerCase().includes('marca'));
+      for (const k of marcaKeys) {
+        const v = row[k];
+        if (v && isNaN(Number(v))) return String(v).trim();
+      }
+      // fallback: retorna qualquer valor de marca mesmo que numérico
+      if (marcaKeys.length > 0) {
+        const v = row[marcaKeys[0]];
+        return v ? String(v).trim() : null;
+      }
+      return null;
     };
 
     let inserted = 0;
     let skipped = 0;
-    const client = await pool.connect();
 
+    // Monta todos os registros válidos antes de gravar
+    const rows: any[][] = [];
+    let autoIdx = 1;
+    for (const row of rawData) {
+      const descricao = getVal(row,
+        ['descrição', 'descricao', 'desc', 'nome', 'produto'],
+        ['descri', 'nome do produto']
+      );
+      if (!descricao || String(descricao).trim() === '') { skipped++; continue; }
+
+      const codigo = getVal(row,
+        ['código', 'codigo', 'cod', 'sku', 'código interno', 'codigo interno'],
+        ['códig', 'codig', 'sku']
+      );
+      const precoRaw = getVal(row,
+        [
+          'tipo integração b2b venda', 'tipo integracao b2b venda',
+          'sugerir preço de venda baseado', 'sugerir preco de venda baseado',
+          'preço de venda', 'preco de venda', 'preço venda', 'preco venda',
+          'venda', 'preço', 'preco', 'valor', 'price',
+        ],
+        ['tipo integraç', 'tipo integrac', 'sugerir preç', 'sugerir prec', 'preço', 'preco', 'valor', 'venda']
+      );
+      const embalagem = getVal(row, ['embalagem', 'emb'], ['embalagem']);
+      const categoria = getVal(row,
+        ['nome da categoria', 'categoria', 'nome categoria'],
+        ['categ']
+      );
+      const codigoBarras = getVal(row,
+        [
+          'gtin unid.venda', 'gtin unid. venda', 'gtin',
+          'unidade venda [ean8, upc12, ean13, e dun14]',
+          'ean unid. tributável', 'ean unid.tributável',
+          'codigo de barras', 'código de barras', 'ean',
+        ],
+        ['gtin', 'ean', 'barras', 'codigo_barras']
+      );
+
+      rows.push([
+        codigo ? String(codigo).trim() : `auto_${autoIdx++}`,
+        String(descricao).trim(),
+        parsePreco(precoRaw),
+        getMarca(row),
+        embalagem ? String(embalagem).trim() : null,
+        categoria ? String(categoria).trim() : null,
+        codigoBarras ? String(codigoBarras).trim() : null,
+      ]);
+    }
+
+    // Fix 4: chunking — grava em lotes de 500 para não estourar memória/timeout
+    const CHUNK = 500;
+    const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      // Limpa todos os produtos antes de reimportar
       await client.query('DELETE FROM products');
 
-      for (const row of rawData) {
-        // Código do produto
-        const codigo = getVal(row,
-          ['código', 'codigo', 'cod', 'sku', 'código interno', 'codigo interno'],
-          ['códig', 'codig', 'sku']
-        );
-
-        // Descrição / nome do produto
-        const descricao = getVal(row,
-          ['descrição', 'descricao', 'desc', 'nome', 'produto'],
-          ['descri', 'nome do produto']
-        );
-
-        // Preço — cobre "Tipo integração B2B VENDA", "Sugerir preço de venda baseado", etc.
-        const precoRaw = getVal(row,
-          [
-            'tipo integração b2b venda', 'tipo integracao b2b venda',
-            'sugerir preço de venda baseado', 'sugerir preco de venda baseado',
-            'preço de venda', 'preco de venda', 'preço venda', 'preco venda',
-            'venda', 'preço', 'preco', 'valor', 'price',
-          ],
-          ['tipo integraç', 'tipo integrac', 'sugerir preç', 'sugerir prec', 'preço', 'preco', 'valor', 'venda']
-        );
-
-        // Marca
-        const marca = getVal(row, ['marca'], ['marca']);
-
-        // Embalagem
-        const embalagem = getVal(row, ['embalagem', 'emb'], ['embalagem']);
-
-        // Categoria
-        const categoria = getVal(row,
-          ['nome da categoria', 'categoria', 'nome categoria'],
-          ['categ']
-        );
-
-        // Código de barras (GTIN / EAN)
-        const codigoBarras = getVal(row,
-          [
-            'gtin unid.venda', 'gtin unid. venda', 'gtin',
-            'unidade venda [ean8, upc12, ean13, e dun14]',
-            'ean unid. tributável', 'ean unid.tributável',
-            'codigo de barras', 'código de barras', 'ean',
-          ],
-          ['gtin', 'ean', 'barras', 'codigo_barras']
-        );
-
-        if (!descricao || String(descricao).trim() === '') {
-          skipped++;
-          continue;
-        }
-
-        const preco = parsePreco(precoRaw);
-        const codigoFinal = codigo ? String(codigo).trim() : `auto_${inserted + skipped + 1}`;
-
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        const chunk = rows.slice(i, i + CHUNK);
+        // Monta INSERT multi-row por chunk
+        const values: any[] = [];
+        const placeholders = chunk.map((_, ci) => {
+          const base = i + ci;
+          const p = (n: number) => `$${base * 7 + n + 1}`;
+          values.push(...chunk[ci]);
+          return `(${[0,1,2,3,4,5,6].map(n => p(n)).join(',')})`;
+        });
+        // Recalcula placeholders sem acumular offset errado
+        const placeholders2 = chunk.map((row, ci) => {
+          const b = ci * 7;
+          return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7})`;
+        });
+        const vals2: any[] = chunk.flat();
         await client.query(`
           INSERT INTO products (codigo, descricao, preco_venda, marca, embalagem, categoria, codigo_barras)
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          VALUES ${placeholders2.join(',')}
           ON CONFLICT (codigo) DO UPDATE
-          SET descricao = EXCLUDED.descricao,
-              preco_venda = EXCLUDED.preco_venda,
-              marca = EXCLUDED.marca,
-              embalagem = EXCLUDED.embalagem,
-              categoria = EXCLUDED.categoria,
-              codigo_barras = EXCLUDED.codigo_barras,
-              ativo = true;
-        `, [
-          codigoFinal,
-          String(descricao).trim(),
-          preco,
-          marca ? String(marca).trim() : null,
-          embalagem ? String(embalagem).trim() : null,
-          categoria ? String(categoria).trim() : null,
-          codigoBarras ? String(codigoBarras).trim() : null,
-        ]);
-
-        inserted++;
+          SET descricao=EXCLUDED.descricao, preco_venda=EXCLUDED.preco_venda,
+              marca=EXCLUDED.marca, embalagem=EXCLUDED.embalagem,
+              categoria=EXCLUDED.categoria, codigo_barras=EXCLUDED.codigo_barras,
+              ativo=true
+        `, vals2);
+        inserted += chunk.length;
       }
 
       await client.query('COMMIT');
-      res.json({ message: `${inserted} produtos importados com sucesso. ${skipped > 0 ? `(${skipped} linhas ignoradas)` : ''}` });
+      res.json({ message: `${inserted} produtos importados com sucesso.${skipped > 0 ? ` (${skipped} linhas ignoradas)` : ''}` });
     } catch (e) {
       await client.query('ROLLBACK');
       throw e;
@@ -415,15 +435,22 @@ app.post('/api/webhook/evolution', async (req, res) => {
 
   if (event.event !== 'messages.upsert') return;
 
+  const key = event.data?.key;
   const msg = event.data?.message;
-  if (!msg || msg.fromMe) return;
+  if (!msg || key?.fromMe) return;
 
-  const senderNumber = event.data.key.remoteJid;
+  const remoteJid: string = key.remoteJid;
+  // Ignore group messages
+  if (remoteJid.endsWith('@g.us')) return;
+  // Strip @s.whatsapp.net suffix for Evolution API sendText
+  const senderNumber = remoteJid.replace('@s.whatsapp.net', '');
 
   let incomingText = msg.conversation || msg.extendedTextMessage?.text || '';
   let tipoMidia: 'texto' | 'audio' | 'imagem' | 'pdf' | 'planilha' = 'texto';
 
   try {
+    await ensureDB();
+
     // Audio transcription via Whisper
     const base64Data: string | undefined = msg.base64 || event.data?.message?.base64;
     if (msg.audioMessage && base64Data) {

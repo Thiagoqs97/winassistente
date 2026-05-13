@@ -81,10 +81,23 @@ function ImportTab() {
     if (!file) return;
     setUploading(true);
     setMessage('');
-    const formData = new FormData();
-    formData.append('file', file);
     try {
-      const res = await fetch('/api/upload-stock', { method: 'POST', body: formData });
+      // Converte arquivo para base64 e envia como JSON — necessário para Vercel serverless
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          resolve(result.split(',')[1]); // remove o prefixo "data:...;base64,"
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const res = await fetch('/api/upload-stock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileData: base64 }),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Upload falhou');
       setMessage(data.message || 'Upload concluído com sucesso!');
@@ -369,6 +382,11 @@ function SettingsTab() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ appUrl }),
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const text = await res.text();
+        throw new Error(`Servidor retornou erro inesperado: ${text.slice(0, 100)}`);
+      }
       const data = await res.json();
       if (!res.ok) throw new Error(JSON.stringify(data.error));
       setWebhookStatus('Webhook configurado no Evolution API com sucesso!');
