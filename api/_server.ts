@@ -429,21 +429,26 @@ async function sendWhatsAppMessage(number: string, text: string) {
 
 // 10. Evolution API Webhook
 app.post('/api/webhook/evolution', async (req, res) => {
-  res.json({ status: 'ok' });
-
   const event = req.body;
+  const ack = () => { if (!res.headersSent) res.json({ status: 'ok' }); };
 
-  if (event.event !== 'messages.upsert') return;
+  if (event.event !== 'messages.upsert') { ack(); return; }
 
   const key = event.data?.key;
   const msg = event.data?.message;
-  if (!msg || key?.fromMe) return;
+  if (!msg || key?.fromMe) { ack(); return; }
 
-  const remoteJid: string = key.remoteJid;
+  const remoteJid: string = key.remoteJid || '';
   // Ignore group messages
-  if (remoteJid.endsWith('@g.us')) return;
-  // Strip @s.whatsapp.net suffix for Evolution API sendText
-  const senderNumber = remoteJid.replace('@s.whatsapp.net', '');
+  if (remoteJid.endsWith('@g.us')) { ack(); return; }
+
+  // WhatsApp now uses @lid format for some users — prefer remoteJidAlt (real phone) when present.
+  const phoneJid: string = key.remoteJidAlt && key.remoteJidAlt.endsWith('@s.whatsapp.net')
+    ? key.remoteJidAlt
+    : remoteJid;
+  const senderNumber = phoneJid
+    .replace('@s.whatsapp.net', '')
+    .replace('@lid', '');
 
   let incomingText = msg.conversation || msg.extendedTextMessage?.text || '';
   let tipoMidia: 'texto' | 'audio' | 'imagem' | 'pdf' | 'planilha' = 'texto';
@@ -644,6 +649,8 @@ Instruções:
     }
   } catch (err: any) {
     console.error('Error processing webhook:', err);
+  } finally {
+    ack();
   }
 });
 
