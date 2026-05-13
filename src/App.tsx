@@ -175,25 +175,31 @@ function ProductsTab() {
           <table className="w-full text-left">
             <thead className="bg-slate-950/50 sticky top-0 z-10 backdrop-blur-md">
               <tr className="text-[10px] uppercase text-slate-500">
-                <th className="px-6 py-4 font-bold">Código / SKU</th>
-                <th className="px-6 py-4 font-bold">Descrição</th>
-                <th className="px-6 py-4 font-bold">Marca</th>
-                <th className="px-6 py-4 font-bold">Preço</th>
-                <th className="px-6 py-4 font-bold text-center">Status IA</th>
+                <th className="px-4 py-4 font-bold">Código</th>
+                <th className="px-4 py-4 font-bold">Descrição</th>
+                <th className="px-4 py-4 font-bold">Marca</th>
+                <th className="px-4 py-4 font-bold">Categoria</th>
+                <th className="px-4 py-4 font-bold">Embalagem</th>
+                <th className="px-4 py-4 font-bold">Cód. Barras</th>
+                <th className="px-4 py-4 font-bold">Preço</th>
+                <th className="px-4 py-4 font-bold text-center">Status</th>
               </tr>
             </thead>
             <tbody className="text-sm">
               {loading ? (
-                <tr><td colSpan={5} className="p-8 text-center text-slate-500">Carregando...</td></tr>
+                <tr><td colSpan={8} className="p-8 text-center text-slate-500">Carregando...</td></tr>
               ) : products.length === 0 ? (
-                <tr><td colSpan={5} className="p-8 text-center text-slate-500">Nenhum produto. Importe uma planilha.</td></tr>
+                <tr><td colSpan={8} className="p-8 text-center text-slate-500">Nenhum produto. Importe uma planilha.</td></tr>
               ) : products.map(p => (
                 <tr key={p.id} className={cn('border-t border-white/5 transition-colors hover:bg-white/5', !p.ativo && 'opacity-50')}>
-                  <td className="px-6 py-4 text-xs font-mono opacity-50">{p.codigo}</td>
-                  <td className="px-6 py-4 text-sm text-slate-200">{p.descricao}</td>
-                  <td className="px-6 py-4 text-sm text-slate-400">{p.marca || '--'}</td>
-                  <td className="px-6 py-4 text-sm text-slate-200">{p.preco_venda ? `R$ ${Number(p.preco_venda).toFixed(2)}` : 'S/N'}</td>
-                  <td className="px-6 py-4 text-center">
+                  <td className="px-4 py-3 text-xs font-mono text-slate-500">{p.codigo}</td>
+                  <td className="px-4 py-3 text-sm text-slate-200 max-w-xs truncate">{p.descricao}</td>
+                  <td className="px-4 py-3 text-xs text-slate-400">{p.marca || '--'}</td>
+                  <td className="px-4 py-3 text-xs text-slate-400">{p.categoria || '--'}</td>
+                  <td className="px-4 py-3 text-xs text-slate-400">{p.embalagem || '--'}</td>
+                  <td className="px-4 py-3 text-xs font-mono text-slate-500">{p.codigo_barras || '--'}</td>
+                  <td className="px-4 py-3 text-sm font-semibold text-slate-200">{p.preco_venda ? `R$ ${Number(p.preco_venda).toFixed(2)}` : '--'}</td>
+                  <td className="px-4 py-3 text-center">
                     <button onClick={() => toggleAtivo(p.id)} className={cn('inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold transition-colors', p.ativo ? 'bg-green-500/20 text-green-400' : 'bg-slate-500/20 text-slate-400')}>
                       {p.ativo ? 'ATIVO' : 'INATIVO'}
                     </button>

@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
 import path from 'path';
-import { createServer as createViteServer } from 'vite';
 import { Pool } from 'pg';
 import multer from 'multer';
 import * as xlsx from 'xlsx';
@@ -44,10 +43,14 @@ async function initDB() {
         preco_venda NUMERIC(10, 2),
         marca VARCHAR(255),
         embalagem VARCHAR(255),
+        categoria VARCHAR(255),
+        codigo_barras VARCHAR(255),
         ativo BOOLEAN DEFAULT true,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS categoria VARCHAR(255);`);
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS codigo_barras VARCHAR(255);`);
 
     await client.query(`
       CREATE INDEX IF NOT EXISTS trgm_idx_products_descricao
@@ -142,69 +145,133 @@ app.use(async (_req, _res, next) => {
 // 1. Upload Stock (XLSX)
 app.post('/api/upload-stock', upload.single('file'), async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded' });
+    return res.status(400).json({ error: 'Nenhum arquivo enviado' });
   }
 
   try {
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
-    const rawData = xlsx.utils.sheet_to_json(sheet) as Record<string, any>[];
+    const rawData = xlsx.utils.sheet_to_json(sheet, { defval: '' }) as Record<string, any>[];
+
+    if (rawData.length === 0) {
+      return res.status(400).json({ error: 'Planilha vazia ou formato não reconhecido' });
+    }
+
+    // Log das colunas encontradas para debug
+    console.log('Colunas encontradas na planilha:', Object.keys(rawData[0]));
+
+    const getVal = (row: Record<string, any>, exactKeys: string[], partialKeys: string[]) => {
+      const rowKeysLower = Object.keys(row).map(k => ({ original: k, lower: k.trim().toLowerCase() }));
+      let match = rowKeysLower.find(({ lower }) =>
+        exactKeys.some(ek => lower === ek.toLowerCase())
+      );
+      if (!match) {
+        match = rowKeysLower.find(({ lower }) =>
+          partialKeys.some(pk => lower.includes(pk.toLowerCase()))
+        );
+      }
+      return match ? row[match.original] : null;
+    };
+
+    const parsePreco = (val: any): number | null => {
+      if (val === null || val === undefined || val === '') return null;
+      if (typeof val === 'number') return isFinite(val) ? val : null;
+      const cleaned = String(val).replace(/R\$\s*/gi, '').replace(/\./g, '').replace(',', '.').replace(/[^0-9.-]/g, '');
+      const n = parseFloat(cleaned);
+      return isFinite(n) ? n : null;
+    };
 
     let inserted = 0;
+    let skipped = 0;
     const client = await pool.connect();
 
     try {
       await client.query('BEGIN');
+      // Limpa todos os produtos antes de reimportar
+      await client.query('DELETE FROM products');
 
       for (const row of rawData) {
-        const getVal = (exactKeys: string[], partialKeys: string[]) => {
-          let key = Object.keys(row).find(k =>
-            exactKeys.some(ek => k.trim().toLowerCase() === ek.toLowerCase())
-          );
-          if (!key) {
-            key = Object.keys(row).find(k =>
-              partialKeys.some(pk => k.toLowerCase().includes(pk))
-            );
-          }
-          return key ? row[key] : null;
-        };
-
-        const codigo = getVal(['código', 'codigo', 'cod', 'sku'], ['códig', 'codig']);
-        const descricao = getVal(['descrição', 'descricao', 'desc'], ['descri']);
-        const precoRaw = getVal(
-          ['venda', 'preço de venda', 'preco de venda', 'preço', 'preco', 'valor'],
-          ['preço de venda', 'preco de venda', 'preço', 'preco', 'valor']
+        // Código do produto
+        const codigo = getVal(row,
+          ['código', 'codigo', 'cod', 'sku', 'código interno', 'codigo interno'],
+          ['códig', 'codig', 'sku']
         );
-        const marca = getVal(['marca'], ['marca']);
-        const embalagem = getVal(['embalagem', 'emb'], ['embalagem']);
 
-        if (!codigo || !descricao) continue;
+        // Descrição / nome do produto
+        const descricao = getVal(row,
+          ['descrição', 'descricao', 'desc', 'nome', 'produto'],
+          ['descri', 'nome do produto']
+        );
 
-        let preco = null;
-        if (typeof precoRaw === 'number') {
-          preco = precoRaw;
-        } else if (typeof precoRaw === 'string') {
-          const cleaned = precoRaw.replace(/\./g, '').replace(',', '.').replace(/[^0-9.-]/g, '');
-          preco = parseFloat(cleaned);
+        // Preço — cobre "Tipo integração B2B VENDA", "Sugerir preço de venda baseado", etc.
+        const precoRaw = getVal(row,
+          [
+            'tipo integração b2b venda', 'tipo integracao b2b venda',
+            'sugerir preço de venda baseado', 'sugerir preco de venda baseado',
+            'preço de venda', 'preco de venda', 'preço venda', 'preco venda',
+            'venda', 'preço', 'preco', 'valor', 'price',
+          ],
+          ['tipo integraç', 'tipo integrac', 'sugerir preç', 'sugerir prec', 'preço', 'preco', 'valor', 'venda']
+        );
+
+        // Marca
+        const marca = getVal(row, ['marca'], ['marca']);
+
+        // Embalagem
+        const embalagem = getVal(row, ['embalagem', 'emb'], ['embalagem']);
+
+        // Categoria
+        const categoria = getVal(row,
+          ['nome da categoria', 'categoria', 'nome categoria'],
+          ['categ']
+        );
+
+        // Código de barras (GTIN / EAN)
+        const codigoBarras = getVal(row,
+          [
+            'gtin unid.venda', 'gtin unid. venda', 'gtin',
+            'unidade venda [ean8, upc12, ean13, e dun14]',
+            'ean unid. tributável', 'ean unid.tributável',
+            'codigo de barras', 'código de barras', 'ean',
+          ],
+          ['gtin', 'ean', 'barras', 'codigo_barras']
+        );
+
+        if (!descricao || String(descricao).trim() === '') {
+          skipped++;
+          continue;
         }
 
+        const preco = parsePreco(precoRaw);
+        const codigoFinal = codigo ? String(codigo).trim() : `auto_${inserted + skipped + 1}`;
+
         await client.query(`
-          INSERT INTO products (codigo, descricao, preco_venda, marca, embalagem)
-          VALUES ($1, $2, $3, $4, $5)
+          INSERT INTO products (codigo, descricao, preco_venda, marca, embalagem, categoria, codigo_barras)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
           ON CONFLICT (codigo) DO UPDATE
           SET descricao = EXCLUDED.descricao,
               preco_venda = EXCLUDED.preco_venda,
               marca = EXCLUDED.marca,
               embalagem = EXCLUDED.embalagem,
+              categoria = EXCLUDED.categoria,
+              codigo_barras = EXCLUDED.codigo_barras,
               ativo = true;
-        `, [String(codigo), String(descricao), preco, marca ? String(marca) : null, embalagem ? String(embalagem) : null]);
+        `, [
+          codigoFinal,
+          String(descricao).trim(),
+          preco,
+          marca ? String(marca).trim() : null,
+          embalagem ? String(embalagem).trim() : null,
+          categoria ? String(categoria).trim() : null,
+          codigoBarras ? String(codigoBarras).trim() : null,
+        ]);
 
         inserted++;
       }
 
       await client.query('COMMIT');
-      res.json({ message: `Importados ${inserted} produtos com sucesso.` });
+      res.json({ message: `${inserted} produtos importados com sucesso. ${skipped > 0 ? `(${skipped} linhas ignoradas)` : ''}` });
     } catch (e) {
       await client.query('ROLLBACK');
       throw e;
@@ -213,7 +280,7 @@ app.post('/api/upload-stock', upload.single('file'), async (req, res) => {
     }
   } catch (err: any) {
     console.error('Import error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message || 'Erro ao processar planilha' });
   }
 });
 
@@ -581,6 +648,7 @@ app.post('/api/setup-webhook', async (req, res) => {
 // --- Server Startup (local dev / production self-hosted) ---
 export async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
