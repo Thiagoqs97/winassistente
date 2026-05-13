@@ -106,7 +106,7 @@ async function initDB() {
 3. O agente gera e envia o orçamento completo após a confirmação dos itens, calculando o total, sem necessidade de intervenção humana.
 4. O agente não mistura contextos de sessões diferentes — quando detecta o início de um novo pedido, trata-o de forma totalmente isolada.
 5. O agente nunca inventa produtos — trabalha exclusivamente com os itens retornados pela busca no estoque.
-6. Sempre responda de forma final com a tabela do orçamento quando os itens forem confirmados.`;
+6. NUNCA use tabelas com | para formatar o orçamento — use o formato de lista com emojis e negrito (*texto*) nativo do WhatsApp.`;
 
     await client.query(`
       INSERT INTO system_config (id, core_prompt, session_timeout_hours)
@@ -626,9 +626,33 @@ Instruções:
 1. Compare os produtos solicitados com os "Produtos encontrados".
 2. Se for um novo pedido ou os itens ainda não foram confirmados, pergunte ao vendedor se os produtos encontrados são os corretos.
 3. Mantenha o controle das quantidades solicitadas.
-4. Após a confirmação dos itens, calcule o total e gere o orçamento completo: Produto, Quantidade, Preço Unitário e Total.
+4. Após a confirmação dos itens, calcule o total e gere o orçamento completo.
 5. NÃO invente produto ou preço que não esteja na lista. Se não encontrar, informe que o item não está em estoque.
-6. Responda SEMPRE em português do Brasil.`;
+6. Responda SEMPRE em português do Brasil.
+
+FORMATAÇÃO — MUITO IMPORTANTE (você está no WhatsApp, NÃO use tabelas markdown com |):
+
+Para CONFIRMAR itens, use este formato:
+Identifiquei os seguintes itens no estoque:
+
+✅ *[Nome do Produto – Marca]* × [Qtd] un.
+✅ *[Nome do Produto – Marca]* × [Qtd] un.
+
+Esses são os produtos certos? Confirme para eu gerar o orçamento! 👍
+
+Para GERAR O ORÇAMENTO, use este formato (nunca use tabela com |):
+📋 *ORÇAMENTO WIN DISTRIBUIDORA*
+—————————————————
+*1.* [Nome – Marca]
+Qtd: [N] un. × R$ [X] = *R$ [Y]*
+
+*2.* [Nome – Marca]
+Qtd: [N] un. × R$ [X] = *R$ [Y]*
+—————————————————
+💰 *TOTAL: R$ [Z]*
+—————————————————
+
+Há mais algum item para adicionar?`;
 
     const finalResponse = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
