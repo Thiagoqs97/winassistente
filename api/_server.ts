@@ -126,8 +126,8 @@ async function initDB() {
     `);
     await client.query(`ALTER TABLE orcamentos ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP;`);
 
-    // Migra status antigo: 'finalizado' -> 'aberto' (e CHECK constraint para o novo enum)
-    await client.query(`UPDATE orcamentos SET status = 'aberto' WHERE status = 'finalizado';`);
+    // Migra status antigo: ordem CORRETA — DROP primeiro, UPDATE depois, ADD por último.
+    // (atualizar para 'aberto' com o constraint antigo ativo violaria a constraint)
     await client.query(`
       DO $$
       BEGIN
@@ -139,6 +139,7 @@ async function initDB() {
         END IF;
       END $$;
     `);
+    await client.query(`UPDATE orcamentos SET status = 'aberto' WHERE status = 'finalizado';`);
     await client.query(`
       ALTER TABLE orcamentos
       ADD CONSTRAINT orcamentos_status_check
