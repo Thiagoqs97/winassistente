@@ -562,13 +562,35 @@ app.post('/api/webhook/evolution', async (req, res) => {
       content: row.conteudo,
     }));
 
-    // Extract product terms with GPT-4o-mini
+    // Extract product terms with GPT-4o-mini — usa CONVERSA COMPLETA para extrair produtos
     const extractResponse = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
       messages: [
         {
           role: 'system',
-          content: 'Given the user message and history, extract a comma-separated list of ONLY the product names the user wants to buy/query. If they explicitly state they want to start a new order/session, add "NEW_SESSION" to the list. If no product is mentioned and no new session, return "unknown".',
+          content: `Você é um EXTRATOR DE PRODUTOS (não é um chatbot e não responde perguntas). Sua única função: analisar uma conversa WhatsApp e retornar os nomes dos produtos mencionados pelo vendedor que devem ser buscados no estoque.
+
+FORMATO DE SAÍDA (obrigatório):
+- Lista separada por vírgulas, contendo apenas nomes de produtos.
+- NUNCA escreva frases, explicações, ou respostas ao usuário. Apenas os nomes.
+- Use nomes específicos quando o sabor/variação for mencionado (ex: "tasty whey chocolate"). Se o vendedor só citou o produto base, retorne só o nome base (ex: "tasty whey").
+
+REGRAS DE INTERPRETAÇÃO:
+1. Considere a CONVERSA INTEIRA, não só a última mensagem.
+2. Se a última mensagem for confirmação ("sim", "ok", "isso", "confirmo", "pode ser") OU pergunta sobre detalhes ("qual sabor?", "quanto custa?", "tem mais?", "quais opções", "quais sabores") — retorne os produtos já discutidos anteriormente na conversa, sem alterar o sabor/variação.
+3. Se novos produtos forem mencionados na última mensagem, inclua-os.
+4. Inclua "NEW_SESSION" SOMENTE quando o vendedor explicitamente disser que quer começar do zero ou pedido para outro cliente (ex: "novo pedido", "outro cliente", "cancela e começa de novo"). NUNCA em confirmações, perguntas ou saudações.
+5. Se nenhum produto foi mencionado em toda a conversa, retorne exatamente "unknown".
+
+EXEMPLOS:
+- Conversa: user "Quero tasty whey" / assistant "Quantos?" / user "Quais opções de sabor"
+  Saída: tasty whey
+- Conversa: user "Me faz orçamento com 2 tasty whey chocolate e 1 morango" / assistant "Confirma?" / user "Sim"
+  Saída: tasty whey chocolate, tasty whey morango
+- Conversa: user "esquece, novo pedido pra outro cliente"
+  Saída: NEW_SESSION
+- Conversa: user "Bom dia"
+  Saída: unknown`,
         },
         ...historyMessages,
         { role: 'user', content: incomingText },
@@ -576,6 +598,7 @@ app.post('/api/webhook/evolution', async (req, res) => {
     });
 
     const extractedContent = extractResponse.choices[0].message.content || 'unknown';
+    console.log('[extract]', { incomingText, extractedContent });
 
     if (extractedContent.includes('NEW_SESSION')) {
       await pool.query(`UPDATE sessoes SET status = 'encerrada', encerrada_em = NOW() WHERE id = $1`, [currentSessionId]);
@@ -607,10 +630,20 @@ app.post('/api/webhook/evolution', async (req, res) => {
         FROM products
         WHERE ativo = true AND similarity(descricao, $1) > 0.1
         ORDER BY similarity(descricao, $1) DESC
-        LIMIT 5
+        LIMIT 20
       `, [term]);
       searchResults = searchResults.concat(rows);
     }
+
+    // Dedup by id
+    const seen = new Set<number>();
+    searchResults = searchResults.filter(p => {
+      if (seen.has(p.id)) return false;
+      seen.add(p.id);
+      return true;
+    });
+
+    console.log('[search]', { terms: termsToSearch, found: searchResults.length });
 
     // Build final response
     const finalPrompt = `Você é o assistente virtual da Win Distribuidora, atendendo representantes de vendas via WhatsApp.
