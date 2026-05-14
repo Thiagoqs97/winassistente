@@ -34,6 +34,7 @@ async function initDB() {
   try {
     await client.query('CREATE EXTENSION IF NOT EXISTS pg_trgm;');
     await client.query('CREATE EXTENSION IF NOT EXISTS "uuid-ossp";');
+    await client.query('CREATE EXTENSION IF NOT EXISTS unaccent;');
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS products (
@@ -55,6 +56,10 @@ async function initDB() {
     await client.query(`
       CREATE INDEX IF NOT EXISTS trgm_idx_products_descricao
       ON products USING GIN (descricao gin_trgm_ops);
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS trgm_idx_products_descricao_lower
+      ON products USING GIN (lower(descricao) gin_trgm_ops);
     `);
 
     await client.query(`
@@ -414,6 +419,74 @@ app.get('/api/sessoes/:sessaoId/mensagens', async (req, res) => {
   }
 });
 
+// --- Multi-strategy product search ---
+async function searchProducts(terms: string[]): Promise<{ term: string; products: any[] }[]> {
+  if (terms.length === 0) return [];
+
+  // Strategy 1 + 2 (batched): trigram similarity AND substring ILIKE, all terms in one query
+  const { rows: batchRows } = await pool.query(`
+    WITH term_list AS (SELECT UNNEST($1::text[]) AS term),
+    matches AS (
+      SELECT
+        p.id, p.codigo, p.descricao, p.preco_venda, p.marca, p.embalagem,
+        t.term,
+        GREATEST(
+          similarity(unaccent(lower(p.descricao)), unaccent(lower(t.term))),
+          CASE WHEN unaccent(lower(p.descricao)) ILIKE '%' || unaccent(lower(t.term)) || '%'
+               THEN 0.15 ELSE 0 END
+        ) AS sml
+      FROM products p
+      CROSS JOIN term_list t
+      WHERE p.ativo = true
+        AND (
+          similarity(unaccent(lower(p.descricao)), unaccent(lower(t.term))) > 0.08
+          OR unaccent(lower(p.descricao)) ILIKE '%' || unaccent(lower(t.term)) || '%'
+        )
+    ),
+    ranked AS (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY term ORDER BY sml DESC) AS rn
+      FROM matches
+    )
+    SELECT id, codigo, descricao, preco_venda, marca, embalagem, term, sml
+    FROM ranked WHERE rn <= 8
+  `, [terms]);
+
+  // Group batch results by term
+  const byTerm = new Map<string, Map<number, any>>(terms.map(t => [t, new Map()]));
+  for (const row of batchRows) {
+    const m = byTerm.get(row.term);
+    if (m && !m.has(row.id)) m.set(row.id, row);
+  }
+
+  // Strategy 3: word-by-word ILIKE for multi-word terms that returned few results
+  for (const term of terms) {
+    const m = byTerm.get(term)!;
+    if (m.size >= 3) continue;
+    const words = term.split(/\s+/).filter(w => w.length >= 3);
+    if (words.length < 2) continue;
+
+    const conds = words
+      .map((_, i) => `unaccent(lower(descricao)) ILIKE '%' || unaccent(lower($${i + 1})) || '%'`)
+      .join(' AND ');
+
+    const { rows: wRows } = await pool.query(
+      `SELECT id, codigo, descricao, preco_venda, marca, embalagem, 0.09::float AS sml
+       FROM products WHERE ativo = true AND (${conds}) LIMIT 15`,
+      words
+    );
+    for (const row of wRows) {
+      if (!m.has(row.id)) m.set(row.id, { ...row, term });
+    }
+  }
+
+  return terms.map(term => ({
+    term,
+    products: Array.from(byTerm.get(term)!.values())
+      .sort((a, b) => b.sml - a.sml)
+      .slice(0, 8),
+  }));
+}
+
 // 9. Send message via Evolution API
 async function sendWhatsAppMessage(number: string, text: string) {
   try {
@@ -504,6 +577,37 @@ app.post('/api/webhook/evolution', async (req, res) => {
       }
     }
 
+    // Excel/CSV spreadsheet from WhatsApp (vendor sending order list as file)
+    if (msg.documentMessage && base64Data && !incomingText) {
+      try {
+        const mimeType: string = msg.documentMessage.mimetype || '';
+        const fileName: string = msg.documentMessage.fileName || '';
+        if (
+          mimeType.includes('spreadsheet') ||
+          mimeType.includes('excel') ||
+          /\.(xlsx|xls)$/i.test(fileName)
+        ) {
+          tipoMidia = 'planilha';
+          const buffer = Buffer.from(base64Data, 'base64');
+          const workbook = xlsx.read(buffer, { type: 'buffer' });
+          const sheet = workbook.Sheets[workbook.SheetNames[0]];
+          const sheetRows = xlsx.utils.sheet_to_json(sheet, { defval: '', header: 1 }) as any[][];
+          const lines = sheetRows
+            .slice(0, 200)
+            .map((r: any[]) => r.filter((c: any) => String(c).trim() !== '').join(' | '))
+            .filter((l: string) => l.trim().length > 0);
+          incomingText = `Pedido recebido em planilha:\n${lines.join('\n')}`;
+          console.log('[doc] Planilha processada:', lines.length, 'linhas');
+        } else if (/\.csv$/i.test(fileName) || mimeType.includes('csv')) {
+          tipoMidia = 'planilha';
+          incomingText = `Pedido recebido em CSV:\n${Buffer.from(base64Data, 'base64').toString('utf-8').slice(0, 4000)}`;
+          console.log('[doc] CSV processado');
+        }
+      } catch (docErr) {
+        console.error('[doc] Erro ao processar documento:', docErr);
+      }
+    }
+
     if (!incomingText || incomingText.trim().length === 0) return;
 
     const { rows: configRows } = await pool.query("SELECT * FROM system_config WHERE id = 'default'");
@@ -571,9 +675,11 @@ app.post('/api/webhook/evolution', async (req, res) => {
           content: `Você é um EXTRATOR DE PRODUTOS (não é um chatbot e não responde perguntas). Sua única função: analisar uma conversa WhatsApp e retornar os nomes dos produtos mencionados pelo vendedor que devem ser buscados no estoque.
 
 FORMATO DE SAÍDA (obrigatório):
-- Lista separada por vírgulas, contendo apenas nomes de produtos.
+- Um produto por linha OU lista separada por vírgulas — escolha o que for mais claro dado o número de itens.
+- Para listas grandes (5+ itens), use uma linha por produto.
 - NUNCA escreva frases, explicações, ou respostas ao usuário. Apenas os nomes.
 - Use nomes específicos quando o sabor/variação for mencionado (ex: "tasty whey chocolate"). Se o vendedor só citou o produto base, retorne só o nome base (ex: "tasty whey").
+- Quando a mensagem for uma planilha ou CSV, extraia TODOS os produtos da lista, um por linha.
 
 REGRAS DE INTERPRETAÇÃO:
 1. Considere a CONVERSA INTEIRA, não só a última mensagem.
@@ -581,6 +687,7 @@ REGRAS DE INTERPRETAÇÃO:
 3. Se novos produtos forem mencionados na última mensagem, inclua-os.
 4. Inclua "NEW_SESSION" SOMENTE quando o vendedor explicitamente disser que quer começar do zero ou pedido para outro cliente (ex: "novo pedido", "outro cliente", "cancela e começa de novo"). NUNCA em confirmações, perguntas ou saudações.
 5. Se nenhum produto foi mencionado em toda a conversa, retorne exatamente "unknown".
+6. Para planilhas/CSV, ignore colunas de quantidade, código, preço — extraia apenas os nomes dos produtos.
 
 EXEMPLOS:
 - Conversa: user "Quero tasty whey" / assistant "Quantos?" / user "Quais opções de sabor"
@@ -590,7 +697,11 @@ EXEMPLOS:
 - Conversa: user "esquece, novo pedido pra outro cliente"
   Saída: NEW_SESSION
 - Conversa: user "Bom dia"
-  Saída: unknown`,
+  Saída: unknown
+- Conversa: user "Pedido recebido em planilha:\nProduto | Qtd\nCreatina DUX 300g | 2\nWhey Gold 1kg | 5"
+  Saída:
+  creatina dux 300g
+  whey gold 1kg`,
         },
         ...historyMessages,
         { role: 'user', content: incomingText },
@@ -616,34 +727,35 @@ EXEMPLOS:
     );
     historyMessages.push({ role: 'user', content: incomingText });
 
-    // Fuzzy Search (pg_trgm)
-    let searchResults: any[] = [];
+    // Multi-strategy product search
     const termsToSearch = extractedContent
-      .split(',')
-      .map(s => s.replace('NEW_SESSION', '').trim())
-      .filter(s => s.length > 0 && s !== 'unknown');
+      .split(/[,\n]/)
+      .map(s => s.replace('NEW_SESSION', '').replace(/^\d+[\.\)\-]\s*/, '').trim())
+      .filter(s => s.length > 2 && s.toLowerCase() !== 'unknown');
 
-    for (const term of termsToSearch) {
-      const { rows } = await pool.query(`
-        SELECT id, codigo, descricao, preco_venda, marca, embalagem,
-               similarity(descricao, $1) as sml
-        FROM products
-        WHERE ativo = true AND similarity(descricao, $1) > 0.1
-        ORDER BY similarity(descricao, $1) DESC
-        LIMIT 20
-      `, [term]);
-      searchResults = searchResults.concat(rows);
+    const groupedResults = await searchProducts(termsToSearch);
+
+    // Flat deduped list for backwards-compat use if needed
+    const seen = new Set<number>();
+    const searchResults: any[] = [];
+    for (const g of groupedResults) {
+      for (const p of g.products) {
+        if (!seen.has(p.id)) { seen.add(p.id); searchResults.push(p); }
+      }
     }
 
-    // Dedup by id
-    const seen = new Set<number>();
-    searchResults = searchResults.filter(p => {
-      if (seen.has(p.id)) return false;
-      seen.add(p.id);
-      return true;
-    });
-
     console.log('[search]', { terms: termsToSearch, found: searchResults.length });
+
+    // Build grouped stock context for the AI
+    const stockContext = groupedResults.length > 0
+      ? groupedResults.map(g =>
+          `[${g.term}]\n${g.products.length > 0
+            ? g.products.map(p =>
+                `- ${p.descricao}${p.marca ? ' – ' + p.marca : ''} | R$ ${p.preco_venda ?? 'consultar'}`
+              ).join('\n')
+            : '- Nenhum produto encontrado no estoque'}`
+        ).join('\n\n')
+      : '(Nenhum produto identificado na mensagem)';
 
     // Build final response
     const finalPrompt = `Você é o assistente virtual da Win Distribuidora, atendendo representantes de vendas via WhatsApp.
@@ -652,16 +764,17 @@ Você é responsável por todo o processo: entender o pedido, confirmar os itens
 REGRAS OBRIGATÓRIAS:
 ${config.core_prompt}
 
-Produtos encontrados no estoque (com preços):
-${JSON.stringify(searchResults.map(p => ({ descricao: p.descricao, marca: p.marca, preco_venda: p.preco_venda })))}
+Produtos solicitados e correspondências no estoque (agrupados por item):
+${stockContext}
 
 Instruções:
-1. Compare os produtos solicitados com os "Produtos encontrados".
+1. Os produtos já estão agrupados pelo item que o vendedor solicitou. Para cada grupo, identifique qual produto do estoque é o correto.
 2. Se for um novo pedido ou os itens ainda não foram confirmados, pergunte ao vendedor se os produtos encontrados são os corretos.
 3. Mantenha o controle das quantidades solicitadas.
 4. Após a confirmação dos itens, calcule o total e gere o orçamento completo.
-5. NÃO invente produto ou preço que não esteja na lista. Se não encontrar, informe que o item não está em estoque.
+5. NÃO invente produto ou preço que não esteja na lista. Se algum grupo mostrar "Nenhum produto encontrado", informe que o item não está em estoque.
 6. Responda SEMPRE em português do Brasil.
+7. VARIAÇÕES DE PRODUTO — MUITO IMPORTANTE: Se o vendedor perguntou sobre sabores, tamanhos ou opções de um produto (ex: "quais sabores?", "quais opções?", "tem de 1kg?"), E o estoque trouxe múltiplos produtos com o mesmo nome-base mas sabores/gramas diferentes: NÃO peça confirmação do produto, LISTE as variações disponíveis como opções. Exemplo de resposta correta: "O *Tasty Whey* tem as seguintes opções:\n• Chocolate Suíço 900g – R$ 89,90\n• Morango 900g – R$ 89,90\n• Baunilha 1kg – R$ 99,90\nQual você quer?" — Da mesma forma, se o vendedor pediu apenas o nome-base sem especificar sabor/tamanho e existem variações no estoque, pergunte qual variação ele deseja antes de confirmar.
 
 FORMATAÇÃO — MUITO IMPORTANTE (você está no WhatsApp, NÃO use tabelas markdown com |):
 
