@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { PackageOpen, MessageSquare, Settings, Upload, History, FileText } from 'lucide-react';
+import { PackageOpen, MessageSquare, Settings, Upload, History, FileText, ShoppingBag } from 'lucide-react';
 import { cn } from './lib/utils';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'import' | 'products' | 'settings' | 'history' | 'orcamentos'>('import');
+  const [activeTab, setActiveTab] = useState<'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas'>('import');
 
   return (
     <div className="flex flex-col h-screen bg-[#020617] text-slate-200 font-sans overflow-hidden relative">
@@ -34,6 +34,7 @@ export default function App() {
             <SidebarItem icon={<PackageOpen size={16} />} label="Produtos" active={activeTab === 'products'} onClick={() => setActiveTab('products')} />
             <SidebarItem icon={<History size={16} />} label="Histórico" active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
             <SidebarItem icon={<FileText size={16} />} label="Orçamentos" active={activeTab === 'orcamentos'} onClick={() => setActiveTab('orcamentos')} />
+            <SidebarItem icon={<ShoppingBag size={16} />} label="Vendas" active={activeTab === 'vendas'} onClick={() => setActiveTab('vendas')} />
             <SidebarItem icon={<Settings size={16} />} label="Configurações" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
           </div>
 
@@ -48,7 +49,8 @@ export default function App() {
             {activeTab === 'import' && <ImportTab />}
             {activeTab === 'products' && <ProductsTab />}
             {activeTab === 'history' && <HistoryTab />}
-            {activeTab === 'orcamentos' && <OrcamentosTab />}
+            {activeTab === 'orcamentos' && <OrcamentosTab mode="orcamentos" />}
+            {activeTab === 'vendas' && <OrcamentosTab mode="vendas" />}
             {activeTab === 'settings' && <SettingsTab />}
           </div>
         </main>
@@ -347,18 +349,22 @@ function HistoryTab() {
   );
 }
 
-function OrcamentosTab() {
+function OrcamentosTab({ mode = 'orcamentos' }: { mode?: 'orcamentos' | 'vendas' }) {
+  const isVendas = mode === 'vendas';
+  const defaultStatus = isVendas ? 'venda' : 'aberto';
   const [list, setList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({ numero: '', cliente_nome: '', data_de: '', data_ate: '', status: '' });
+  const [filters, setFilters] = useState({ numero: '', cliente_nome: '', data_de: '', data_ate: '', status: defaultStatus });
   const [selected, setSelected] = useState<any | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
-  const load = async () => {
+  const load = async (override?: typeof filters) => {
     setLoading(true);
     try {
+      const f = override ?? filters;
       const qs = new URLSearchParams();
-      (Object.entries(filters) as [string, string][]).forEach(([k, v]) => { if (v) qs.set(k, v); });
+      (Object.entries(f) as [string, string][]).forEach(([k, v]) => { if (v) qs.set(k, v); });
+      if (isVendas) qs.set('status', 'venda');
       const res = await fetch(`/api/orcamentos?${qs.toString()}`);
       const data = await res.json();
       setList(Array.isArray(data) ? data : []);
@@ -367,7 +373,12 @@ function OrcamentosTab() {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    setFilters({ numero: '', cliente_nome: '', data_de: '', data_ate: '', status: defaultStatus });
+    setSelected(null);
+    load({ numero: '', cliente_nome: '', data_de: '', data_ate: '', status: defaultStatus });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
 
   const openDetail = async (numero: string) => {
     setDetailLoading(true);
@@ -380,23 +391,36 @@ function OrcamentosTab() {
     }
   };
 
-  const cancelar = async (numero: string) => {
-    if (!confirm(`Cancelar o orçamento ${numero}?`)) return;
-    await fetch(`/api/orcamentos/${numero}/cancelar`, { method: 'PATCH' });
+  const mudarStatus = async (numero: string, acao: 'fechar' | 'cancelar' | 'reabrir') => {
+    const labels: Record<string, string> = {
+      fechar: 'Marcar como VENDA',
+      cancelar: 'Cancelar orçamento',
+      reabrir: 'Reabrir orçamento',
+    };
+    if (!confirm(`${labels[acao]} ${numero}?`)) return;
+    await fetch(`/api/orcamentos/${numero}/${acao}`, { method: 'PATCH' });
     await load();
     if (selected?.numero === numero) await openDetail(numero);
   };
 
   const fmtBR = (n: any) => Number(n ?? 0).toFixed(2).replace('.', ',');
-  const statusBadge = (s: string) => s === 'finalizado'
-    ? 'bg-emerald-500/20 text-emerald-400'
-    : 'bg-rose-500/20 text-rose-400';
+  const statusBadge = (s: string) => {
+    if (s === 'venda') return 'bg-emerald-500/20 text-emerald-400';
+    if (s === 'cancelado') return 'bg-rose-500/20 text-rose-400';
+    if (s === 'aberto') return 'bg-amber-500/20 text-amber-400';
+    return 'bg-slate-500/20 text-slate-400';
+  };
+
+  const titulo = isVendas ? 'Vendas' : 'Orçamentos';
+  const subtitulo = isVendas
+    ? 'Orçamentos fechados como venda.'
+    : 'Consulte e gerencie orçamentos em negociação.';
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div>
-        <h2 className="text-4xl font-bold text-white">Orçamentos</h2>
-        <p className="text-slate-400 mt-2">Consulte e gerencie orçamentos gerados pelos vendedores.</p>
+        <h2 className="text-4xl font-bold text-white">{titulo}</h2>
+        <p className="text-slate-400 mt-2">{subtitulo}</p>
       </div>
 
       <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-4">
@@ -405,15 +429,19 @@ function OrcamentosTab() {
           <input value={filters.cliente_nome} onChange={e => setFilters({ ...filters, cliente_nome: e.target.value })} placeholder="Cliente" className="md:col-span-2 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-slate-500" />
           <input type="date" value={filters.data_de} onChange={e => setFilters({ ...filters, data_de: e.target.value })} className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white" />
           <input type="date" value={filters.data_ate} onChange={e => setFilters({ ...filters, data_ate: e.target.value })} className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white" />
-          <select value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })} className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white">
-            <option value="">Todos os status</option>
-            <option value="finalizado">Finalizado</option>
-            <option value="cancelado">Cancelado</option>
-          </select>
+          {isVendas ? (
+            <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-2 text-sm text-emerald-300 flex items-center justify-center">Vendas fechadas</div>
+          ) : (
+            <select value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })} className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white">
+              <option value="aberto">Em aberto</option>
+              <option value="cancelado">Cancelados</option>
+              <option value="">Todos</option>
+            </select>
+          )}
         </div>
         <div className="flex gap-2 mt-3">
-          <button onClick={load} className="px-4 py-2 bg-indigo-500/20 border border-indigo-500/30 hover:bg-indigo-500/30 text-indigo-200 text-sm rounded-xl transition-colors">Filtrar</button>
-          <button onClick={() => { setFilters({ numero: '', cliente_nome: '', data_de: '', data_ate: '', status: '' }); setTimeout(load, 0); }} className="px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-sm rounded-xl transition-colors">Limpar</button>
+          <button onClick={() => load()} className="px-4 py-2 bg-indigo-500/20 border border-indigo-500/30 hover:bg-indigo-500/30 text-indigo-200 text-sm rounded-xl transition-colors">Filtrar</button>
+          <button onClick={() => { const f = { numero: '', cliente_nome: '', data_de: '', data_ate: '', status: defaultStatus }; setFilters(f); load(f); }} className="px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-sm rounded-xl transition-colors">Limpar</button>
         </div>
       </div>
 
@@ -491,9 +519,17 @@ function OrcamentosTab() {
                   <span className="text-xs text-slate-400">Total</span>
                   <span className="text-lg font-bold text-white">R$ {fmtBR(selected.total)}</span>
                 </div>
-                {selected.status === 'finalizado' && (
-                  <button onClick={() => cancelar(selected.numero)} className="w-full px-4 py-2 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 text-rose-300 text-sm rounded-xl transition-colors">Cancelar orçamento</button>
-                )}
+                <div className="space-y-2">
+                  {selected.status === 'aberto' && (
+                    <>
+                      <button onClick={() => mudarStatus(selected.numero, 'fechar')} className="w-full px-4 py-2 bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 text-emerald-300 text-sm rounded-xl transition-colors">✅ Marcar como venda</button>
+                      <button onClick={() => mudarStatus(selected.numero, 'cancelar')} className="w-full px-4 py-2 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 text-rose-300 text-sm rounded-xl transition-colors">🚫 Cancelar orçamento</button>
+                    </>
+                  )}
+                  {(selected.status === 'venda' || selected.status === 'cancelado') && (
+                    <button onClick={() => mudarStatus(selected.numero, 'reabrir')} className="w-full px-4 py-2 bg-amber-500/10 border border-amber-500/30 hover:bg-amber-500/20 text-amber-300 text-sm rounded-xl transition-colors">↩️ Reabrir como orçamento</button>
+                  )}
+                </div>
               </div>
             )}
           </div>

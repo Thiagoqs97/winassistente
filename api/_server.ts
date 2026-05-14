@@ -87,9 +87,11 @@ async function initDB() {
         vendedor_id UUID REFERENCES vendedores(id) ON DELETE CASCADE,
         iniciada_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         encerrada_em TIMESTAMP,
-        status TEXT DEFAULT 'ativa' CHECK (status IN ('ativa', 'encerrada', 'orcamento_gerado'))
+        status TEXT DEFAULT 'ativa' CHECK (status IN ('ativa', 'encerrada', 'orcamento_gerado')),
+        acao_pendente JSONB
       );
     `);
+    await client.query(`ALTER TABLE sessoes ADD COLUMN IF NOT EXISTS acao_pendente JSONB;`);
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS mensagens (
@@ -117,13 +119,37 @@ async function initDB() {
         cliente_nome TEXT,
         itens JSONB NOT NULL,
         total NUMERIC(10, 2) NOT NULL,
-        status TEXT DEFAULT 'finalizado' CHECK (status IN ('finalizado', 'cancelado')),
-        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        status TEXT DEFAULT 'aberto',
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em TIMESTAMP
       );
     `);
+    await client.query(`ALTER TABLE orcamentos ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP;`);
+
+    // Migra status antigo: 'finalizado' -> 'aberto' (e CHECK constraint para o novo enum)
+    await client.query(`UPDATE orcamentos SET status = 'aberto' WHERE status = 'finalizado';`);
+    await client.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.table_constraints
+          WHERE table_name = 'orcamentos' AND constraint_name = 'orcamentos_status_check'
+        ) THEN
+          ALTER TABLE orcamentos DROP CONSTRAINT orcamentos_status_check;
+        END IF;
+      END $$;
+    `);
+    await client.query(`
+      ALTER TABLE orcamentos
+      ADD CONSTRAINT orcamentos_status_check
+      CHECK (status IN ('aberto', 'venda', 'cancelado'));
+    `);
+    await client.query(`ALTER TABLE orcamentos ALTER COLUMN status SET DEFAULT 'aberto';`);
+
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orcamentos_vendedor ON orcamentos(vendedor_id, criado_em DESC);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orcamentos_numero ON orcamentos(numero);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orcamentos_cliente ON orcamentos(lower(cliente_nome));`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_orcamentos_vendedor_status ON orcamentos(vendedor_id, status, criado_em DESC);`);
 
     const defaultPrompt = `1. O agente tem acesso ao histórico completo da sessão ativa e deve utilizá-lo para entender pedidos construídos em múltiplas mensagens.
 2. O agente confirma os itens identificados antes de gerar qualquer orçamento, perguntando ao vendedor se os produtos encontrados correspondem ao que foi solicitado.
@@ -498,7 +524,7 @@ app.get('/api/orcamentos/:numero', async (req, res) => {
 app.patch('/api/orcamentos/:numero/cancelar', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `UPDATE orcamentos SET status = 'cancelado' WHERE numero = $1 RETURNING *`,
+      `UPDATE orcamentos SET status = 'cancelado', atualizado_em = NOW() WHERE numero = $1 RETURNING *`,
       [req.params.numero]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Orçamento não encontrado' });
@@ -507,6 +533,109 @@ app.patch('/api/orcamentos/:numero/cancelar', async (req, res) => {
     res.status(500).json({ error: 'Database error' });
   }
 });
+
+// 8e. Orçamento: fechar como venda
+app.patch('/api/orcamentos/:numero/fechar', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE orcamentos SET status = 'venda', atualizado_em = NOW() WHERE numero = $1 RETURNING *`,
+      [req.params.numero]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Orçamento não encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// 8f. Orçamento: reabrir
+app.patch('/api/orcamentos/:numero/reabrir', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE orcamentos SET status = 'aberto', atualizado_em = NOW() WHERE numero = $1 RETURNING *`,
+      [req.params.numero]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Orçamento não encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// --- Onboarding: parse de nome do vendedor a partir da mensagem ---
+// Aceita textos como "João", "meu nome é Maria", "sou o Pedro", "aqui é a Ana".
+// Rejeita textos que parecem pedido/produto (muito longos, com números/preços).
+function parseNomeVendedor(text: string): string | null {
+  if (!text) return null;
+  let cleaned = text.trim();
+  cleaned = cleaned.replace(
+    /^(meu nome (e|é)\s*:?\s*|me chamo\s+|sou (o |a )?|aqui (e|é) (o |a )?|nome\s*:?\s*|eu sou (o |a )?)/i,
+    ''
+  ).trim();
+  cleaned = cleaned.replace(/[.!?,;]+$/, '').trim();
+  if (cleaned.length < 2 || cleaned.length > 60) return null;
+  // Rejeita se tem dígito (provavelmente é produto/preço/quantidade)
+  if (/\d/.test(cleaned)) return null;
+  // Deve ser majoritariamente letras+espaços (até 3 palavras, padrão de nome)
+  if (!/^[\p{L}][\p{L}\s'-]{1,}$/u.test(cleaned)) return null;
+  const palavras = cleaned.split(/\s+/);
+  if (palavras.length > 5) return null;
+  return palavras
+    .map(w => w.charAt(0).toLocaleUpperCase('pt-BR') + w.slice(1).toLocaleLowerCase('pt-BR'))
+    .join(' ');
+}
+
+// --- Confirmação sim/não para ações pendentes (fechar venda / cancelar) ---
+function parseConfirmacao(text: string): 'sim' | 'nao' | 'ambiguo' {
+  const t = text.trim().toLowerCase().replace(/[.!?,;]+$/, '');
+  if (/^(sim|s|ok|pode|isso|confirma|confirmo|confirmar|positivo|claro|fecha|manda|vai|sim por favor|sim pode|com certeza|certeza)\b/.test(t)) return 'sim';
+  if (/^(nao|não|n|negativo|cancela isso|esquece|deixa|nem|para|pare|errado|nao quero|não quero)\b/.test(t)) return 'nao';
+  return 'ambiguo';
+}
+
+// --- Normaliza "123" / "ORC-7" / "orc 45" → "ORC-000123" ---
+function normalizarNumeroOrcamento(ref: string | null | undefined): string | null {
+  if (!ref) return null;
+  const digits = String(ref).replace(/\D/g, '');
+  if (!digits) return null;
+  return `ORC-${digits.padStart(6, '0')}`;
+}
+
+// --- Format texto de orçamento (reusado por finalizar e alterar) ---
+function formatarTextoOrcamento(opts: {
+  numero: string;
+  clienteNome: string | null;
+  itens: any[];
+  total: number;
+  cabecalho?: string;
+  rodape?: string;
+}): string {
+  const fmtBR = (n: number) => n.toFixed(2).replace('.', ',');
+  const linhas = opts.itens.map((it: any, i: number) => {
+    const nome = String(it.descricao ?? '').trim();
+    const marca = String(it.marca ?? '').trim();
+    const nomeUpper = nome.toUpperCase();
+    const marcaJaNoNome = marca && nomeUpper.includes(marca.toUpperCase());
+    const nomeMarca = marca && !marcaJaNoNome ? `${nome} - ${marca}` : nome;
+    const qtd = Number(it.qtd ?? 0);
+    const pu = Number(it.preco_unit ?? 0);
+    const sub = Number(it.subtotal ?? qtd * pu);
+    return `${i + 1}. ${nomeMarca}\n   Qtd: ${qtd} un. x R$ ${fmtBR(pu)} = R$ ${fmtBR(sub)}`;
+  }).join('\n\n');
+
+  const cabecalho = opts.cabecalho || `📋 *ORÇAMENTO ${opts.numero}*`;
+  const rodape = opts.rodape || `Orçamento ${opts.numero} salvo. Para um novo atendimento, é só enviar uma nova mensagem.`;
+
+  return `${cabecalho}
+—————————————————${opts.clienteNome ? `\nCliente: ${opts.clienteNome}` : ''}
+
+${linhas}
+—————————————————
+💰 *TOTAL: R$ ${fmtBR(opts.total)}*
+—————————————————
+
+${rodape}`;
+}
 
 // --- Multi-strategy product search ---
 // Limite alto por termo: quando o vendedor pergunta "quais sabores do X", precisamos
@@ -777,10 +906,13 @@ app.post('/api/webhook/evolution', async (req, res) => {
 
     // Session Management
     const { rows: vendRows } = await pool.query(
-      `INSERT INTO vendedores (numero_whatsapp) VALUES ($1) ON CONFLICT (numero_whatsapp) DO UPDATE SET ativo = true RETURNING id`,
+      `INSERT INTO vendedores (numero_whatsapp) VALUES ($1)
+       ON CONFLICT (numero_whatsapp) DO UPDATE SET ativo = true
+       RETURNING id, nome`,
       [senderNumber]
     );
     const vendedorId = vendRows[0].id;
+    let vendedorNome: string | null = vendRows[0].nome;
 
     let currentSessionId: string | undefined;
     const now = new Date();
@@ -816,6 +948,96 @@ app.post('/api/webhook/evolution', async (req, res) => {
       currentSessionId = newSessionRows[0].id;
     }
 
+    // --- Onboarding: vendedor sem nome cadastrado ---
+    // Bloqueia todo o fluxo de pedido até termos um nome salvo.
+    if (!vendedorNome) {
+      // Registra a mensagem recebida antes de decidir o que responder
+      await pool.query(
+        `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+        [currentSessionId, vendedorId, 'user', incomingText, tipoMidia]
+      );
+
+      // Já perguntamos o nome antes? Conta respostas anteriores do assistant na sessão.
+      const { rows: askCountRows } = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM mensagens WHERE sessao_id = $1 AND papel = 'assistant'`,
+        [currentSessionId]
+      );
+      const jaPerguntou = askCountRows[0].n > 0;
+
+      let reply: string;
+      if (!jaPerguntou) {
+        reply = 'Olá! 👋 Sou o assistente da Win Distribuidora.\n\nAntes de começarmos, qual é o seu nome? (assim eu vincular seus orçamentos corretamente)';
+      } else {
+        const nomeExtraido = parseNomeVendedor(incomingText);
+        if (nomeExtraido) {
+          await pool.query(`UPDATE vendedores SET nome = $1 WHERE id = $2`, [nomeExtraido, vendedorId]);
+          vendedorNome = nomeExtraido;
+          reply = `Prazer, ${nomeExtraido}! 🎯\n\nAgora é só me mandar o pedido que eu monto o orçamento. Lembre de informar o nome do cliente também.`;
+        } else {
+          reply = 'Não consegui identificar seu nome. Pode me mandar só o nome, por favor? (ex: "João Silva")';
+        }
+      }
+
+      await sendWhatsAppMessage(senderNumber, reply);
+      await pool.query(
+        `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+        [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+      );
+      return;
+    }
+
+    // --- Confirmação pendente (fechar venda / cancelar) ---
+    const { rows: pendRows } = await pool.query(
+      `SELECT acao_pendente FROM sessoes WHERE id = $1`,
+      [currentSessionId]
+    );
+    const acaoPendente: { tipo?: string; numero?: string } | null = pendRows[0]?.acao_pendente || null;
+    if (acaoPendente && acaoPendente.tipo && acaoPendente.numero) {
+      const conf = parseConfirmacao(incomingText);
+      if (conf === 'sim' || conf === 'nao') {
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'user', incomingText, tipoMidia]
+        );
+
+        let reply: string;
+        if (conf === 'sim') {
+          if (acaoPendente.tipo === 'fechar_venda') {
+            const { rowCount } = await pool.query(
+              `UPDATE orcamentos SET status = 'venda', atualizado_em = NOW()
+               WHERE numero = $1 AND vendedor_id = $2 AND status = 'aberto'`,
+              [acaoPendente.numero, vendedorId]
+            );
+            reply = (rowCount ?? 0) > 0
+              ? `✅ *${acaoPendente.numero}* marcado como VENDA. 🎉`
+              : `Não consegui fechar o ${acaoPendente.numero} — talvez já tenha sido fechado ou cancelado.`;
+          } else if (acaoPendente.tipo === 'cancelar') {
+            const { rowCount } = await pool.query(
+              `UPDATE orcamentos SET status = 'cancelado', atualizado_em = NOW()
+               WHERE numero = $1 AND vendedor_id = $2 AND status = 'aberto'`,
+              [acaoPendente.numero, vendedorId]
+            );
+            reply = (rowCount ?? 0) > 0
+              ? `🚫 *${acaoPendente.numero}* cancelado.`
+              : `Não consegui cancelar o ${acaoPendente.numero} — talvez já tenha sido fechado ou cancelado.`;
+          } else {
+            reply = 'Ação não reconhecida.';
+          }
+        } else {
+          reply = `Ok, mantive o *${acaoPendente.numero}* como está. 👍`;
+        }
+        await pool.query(`UPDATE sessoes SET acao_pendente = NULL WHERE id = $1`, [currentSessionId]);
+        await sendWhatsAppMessage(senderNumber, reply);
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+        );
+        return;
+      }
+      // Ambíguo: limpa pending e segue fluxo normal (vendedor mudou de assunto)
+      await pool.query(`UPDATE sessoes SET acao_pendente = NULL WHERE id = $1`, [currentSessionId]);
+    }
+
     // AI Triage
     const { rows: historicoRows } = await pool.query(
       `SELECT papel as role, conteudo FROM mensagens WHERE sessao_id = $1 ORDER BY criado_em ASC`,
@@ -837,37 +1059,45 @@ app.post('/api/webhook/evolution', async (req, res) => {
       messages: [
         {
           role: 'system',
-          content: `Você NÃO é um chatbot. Você é um EXTRATOR DE TERMOS DE BUSCA. Você NUNCA responde, NUNCA explica, NUNCA se desculpa, NUNCA diz "não localizei". Sua ÚNICA saída é um JSON com a estrutura abaixo.
+          content: `Você NÃO é um chatbot. Você é um CLASSIFICADOR DE INTENÇÃO + EXTRATOR. Sua ÚNICA saída é um JSON com a estrutura abaixo. NUNCA responda em texto livre.
 
-SAÍDA (JSON obrigatório, sem texto extra):
+SAÍDA (JSON obrigatório):
 {
-  "new_session": boolean,   // true SOMENTE se o vendedor pediu novo pedido / outro cliente explicitamente
-  "terms": string[]         // termos de busca a usar contra o estoque, em minúsculas
+  "intent": "pedido" | "listar_abertos" | "buscar_por_cliente" | "fechar_venda" | "cancelar_orcamento" | "alterar_orcamento" | "outro",
+  "new_session": boolean,        // true SOMENTE se o vendedor pediu novo pedido / outro cliente explicitamente
+  "ref_numero": string | null,   // se citou um nº de orçamento (ex: "ORC-000123", "123", "o orçamento 45"). Devolva os DÍGITOS apenas: "123", "45". null se não citou.
+  "cliente_busca": string | null,// se intent=buscar_por_cliente, nome a buscar. null caso contrário.
+  "terms": string[]              // termos de busca de produto, em minúsculas. Use SÓ para intent=pedido ou alterar_orcamento.
 }
 
-REGRAS PARA "terms":
-1. Use APENAS o nome-base do produto. NÃO invente nem acrescente sabor, gramatura, marca ou variação que o vendedor não tenha dito explicitamente.
-   - "Qual o valor da creatina dux de 300g" → ["creatina dux 300g"]      (vendedor disse 300g, mantém)
-   - "Qual o valor da creatina dux" → ["creatina dux"]                    (sem gramatura, NÃO invente)
-   - "CREATINA DUX" → ["creatina dux"]                                    (NÃO acrescente "300g")
-   - "Quais os sabores do TASTY WHEY?" → ["tasty whey"]                   (pergunta variações → só nome-base)
-   - "Quais sabores tem o whey gold?" → ["whey gold"]                     (idem)
-   - "Tem outro tamanho da creatina dux?" → ["creatina dux"]              (idem)
-2. Se o vendedor citou MÚLTIPLOS produtos / sabores específicos, liste todos.
-   - "Me faz orçamento com 2 tasty whey chocolate e 1 morango" → ["tasty whey chocolate","tasty whey morango"]
-3. Considere a CONVERSA INTEIRA. Para confirmações ("sim","ok","isso") OU perguntas de detalhe ("qual sabor?","quanto custa?","tem mais?","quais opções","quais sabores","tem maior?","tem menor?") — retorne os mesmos termos do último pedido do vendedor, sem alterar sabor/gramatura.
-4. Para planilhas/CSV: extraia TODOS os nomes de produtos, um por item; ignore colunas de quantidade/código/preço.
-5. Para saudações, agradecimentos, mensagens sem produto → "terms": [].
-6. NUNCA escreva frases. NUNCA inclua texto fora do JSON.
+DEFINIÇÃO DOS INTENTS:
+- "pedido": vendedor está montando um orçamento novo (citando produtos, quantidades, confirmando itens, perguntando preço/variações). Default na dúvida.
+- "listar_abertos": vendedor pergunta seus orçamentos em aberto / em negociação ("quais orçamentos estão abertos?", "lista meus orçamentos", "o que tenho em negociação", "quais orçamentos não fechei ainda").
+- "buscar_por_cliente": vendedor pede orçamentos de um cliente pelo nome ("orçamentos do João", "tenho algum orçamento da Maria?", "busca orçamentos do Pedro Silva"). Preencha cliente_busca com o nome.
+- "fechar_venda": vendedor quer marcar um orçamento como venda fechada ("fechei o ORC-123", "marca o 45 como venda", "o 123 virou venda", "vendi o orçamento 7"). Preencha ref_numero.
+- "cancelar_orcamento": vendedor quer cancelar um orçamento ("cancela o ORC-123", "cancela o 45", "esquece o orçamento 7"). Preencha ref_numero.
+- "alterar_orcamento": vendedor quer modificar um orçamento já gerado ("adiciona 2 whey no ORC-123", "muda a quantidade do 45", "tira o tasty do 7", "no 123 troca o sabor"). Preencha ref_numero E terms (novos produtos/itens citados).
+- "outro": saudação, agradecimento, dúvida geral, mensagem sem ação clara.
+
+REGRAS PARA "terms" (só preencher quando intent="pedido" ou "alterar_orcamento"):
+1. Use APENAS o nome-base do produto. NÃO invente sabor, gramatura, marca.
+2. Citou múltiplos produtos? Liste todos.
+3. Considere a conversa inteira. Confirmações ("sim","ok","isso") OU perguntas de detalhe ("qual sabor?","tem maior?") → repita os mesmos termos do último pedido.
+4. Planilha/CSV: extraia todos os produtos.
+5. Sem produto explícito (saudação, listar, fechar, cancelar) → terms = [].
 
 EXEMPLOS:
-- "Quais os sabores do TASTY WHEY?" → {"new_session":false,"terms":["tasty whey"]}
-- "Qual o valor da creatina dux de 300g" → {"new_session":false,"terms":["creatina dux 300g"]}
-- "tem maior?" (após pedir creatina dux) → {"new_session":false,"terms":["creatina dux"]}
-- "esquece, novo pedido pra outro cliente" → {"new_session":true,"terms":[]}
-- "Bom dia" → {"new_session":false,"terms":[]}
-- "obrigado" → {"new_session":false,"terms":[]}
-- "Pedido recebido em planilha:\\nProduto | Qtd\\nCreatina DUX 300g | 2\\nWhey Gold 1kg | 5" → {"new_session":false,"terms":["creatina dux 300g","whey gold 1kg"]}`,
+- "Quais os sabores do TASTY WHEY?" → {"intent":"pedido","new_session":false,"ref_numero":null,"cliente_busca":null,"terms":["tasty whey"]}
+- "Quais orçamentos estão abertos?" → {"intent":"listar_abertos","new_session":false,"ref_numero":null,"cliente_busca":null,"terms":[]}
+- "Lista meus orçamentos em negociação" → {"intent":"listar_abertos","new_session":false,"ref_numero":null,"cliente_busca":null,"terms":[]}
+- "Tenho algum orçamento do João?" → {"intent":"buscar_por_cliente","new_session":false,"ref_numero":null,"cliente_busca":"joão","terms":[]}
+- "Busca orçamentos da Maria Silva" → {"intent":"buscar_por_cliente","new_session":false,"ref_numero":null,"cliente_busca":"maria silva","terms":[]}
+- "Fechei o ORC-000123" → {"intent":"fechar_venda","new_session":false,"ref_numero":"123","cliente_busca":null,"terms":[]}
+- "marca o 45 como venda" → {"intent":"fechar_venda","new_session":false,"ref_numero":"45","cliente_busca":null,"terms":[]}
+- "cancela o ORC-7" → {"intent":"cancelar_orcamento","new_session":false,"ref_numero":"7","cliente_busca":null,"terms":[]}
+- "adiciona 2 whey gold no ORC-123" → {"intent":"alterar_orcamento","new_session":false,"ref_numero":"123","cliente_busca":null,"terms":["whey gold"]}
+- "Bom dia" → {"intent":"outro","new_session":false,"ref_numero":null,"cliente_busca":null,"terms":[]}
+- "esquece, novo pedido pra outro cliente" → {"intent":"pedido","new_session":true,"ref_numero":null,"cliente_busca":null,"terms":[]}`,
         },
         ...historyMessages,
         { role: 'user', content: incomingText },
@@ -875,15 +1105,24 @@ EXEMPLOS:
     });
 
     const rawExtract = extractResponse.choices[0].message.content || '{}';
-    let parsedExtract: { new_session?: boolean; terms?: string[] } = {};
+    let parsedExtract: {
+      intent?: string;
+      new_session?: boolean;
+      ref_numero?: string | null;
+      cliente_busca?: string | null;
+      terms?: string[];
+    } = {};
     try {
       parsedExtract = JSON.parse(rawExtract);
     } catch {
       console.error('[extract] JSON parse failed, raw:', rawExtract);
     }
+    const intent = (parsedExtract.intent as string) || 'pedido';
     const newSession = parsedExtract.new_session === true;
+    const refNumero = parsedExtract.ref_numero ? String(parsedExtract.ref_numero).trim() : null;
+    const clienteBusca = parsedExtract.cliente_busca ? String(parsedExtract.cliente_busca).trim() : null;
     const extractedTerms = Array.isArray(parsedExtract.terms) ? parsedExtract.terms : [];
-    console.log('[extract]', { incomingText, newSession, extractedTerms });
+    console.log('[extract]', { incomingText, intent, newSession, refNumero, clienteBusca, extractedTerms });
 
     if (newSession) {
       await pool.query(`UPDATE sessoes SET status = 'encerrada', encerrada_em = NOW() WHERE id = $1`, [currentSessionId]);
@@ -900,6 +1139,170 @@ EXEMPLOS:
       [currentSessionId, vendedorId, 'user', incomingText, tipoMidia]
     );
     historyMessages.push({ role: 'user', content: incomingText });
+
+    // --- Roteamento de intents administrativas (respostas determinísticas, sem agente) ---
+    const fmtBRn = (n: any) => Number(n ?? 0).toFixed(2).replace('.', ',');
+
+    if (intent === 'listar_abertos') {
+      const { rows: abertos } = await pool.query(
+        `SELECT numero, cliente_nome, total, criado_em FROM orcamentos
+         WHERE vendedor_id = $1 AND status = 'aberto'
+         ORDER BY criado_em DESC LIMIT 30`,
+        [vendedorId]
+      );
+      const reply = abertos.length === 0
+        ? `Você não tem orçamentos em aberto no momento, ${vendedorNome}. 👍`
+        : `Seus orçamentos em aberto (${abertos.length}):\n\n` +
+          abertos.map((o, i) =>
+            `${i + 1}. *${o.numero}* — ${o.cliente_nome || 'sem cliente'} — R$ ${fmtBRn(o.total)}`
+          ).join('\n') +
+          `\n\nPara fechar como venda, mande: "fechei o ${abertos[0].numero}". Para cancelar: "cancela o ${abertos[0].numero}".`;
+      await sendWhatsAppMessage(senderNumber, reply);
+      await pool.query(
+        `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+        [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+      );
+      return;
+    }
+
+    if (intent === 'buscar_por_cliente') {
+      if (!clienteBusca) {
+        const reply = 'Qual o nome do cliente que você quer buscar?';
+        await sendWhatsAppMessage(senderNumber, reply);
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+        );
+        return;
+      }
+      const { rows: matches } = await pool.query(
+        `SELECT numero, cliente_nome, total, status, criado_em FROM orcamentos
+         WHERE vendedor_id = $1 AND unaccent(lower(cliente_nome)) LIKE unaccent(lower($2))
+         ORDER BY criado_em DESC LIMIT 30`,
+        [vendedorId, `%${clienteBusca}%`]
+      );
+      const statusLabel: Record<string, string> = {
+        aberto: '🟡 aberto',
+        venda: '✅ venda',
+        cancelado: '🚫 cancelado',
+      };
+      const reply = matches.length === 0
+        ? `Não encontrei orçamentos para "${clienteBusca}".`
+        : `Orçamentos de "${clienteBusca}" (${matches.length}):\n\n` +
+          matches.map((o, i) =>
+            `${i + 1}. *${o.numero}* — ${o.cliente_nome} — R$ ${fmtBRn(o.total)} — ${statusLabel[o.status] || o.status}`
+          ).join('\n');
+      await sendWhatsAppMessage(senderNumber, reply);
+      await pool.query(
+        `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+        [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+      );
+      return;
+    }
+
+    if (intent === 'fechar_venda' || intent === 'cancelar_orcamento') {
+      const numeroNorm = normalizarNumeroOrcamento(refNumero);
+      if (!numeroNorm) {
+        const reply = intent === 'fechar_venda'
+          ? 'Qual orçamento você quer fechar como venda? (ex: "fechei o ORC-000123")'
+          : 'Qual orçamento você quer cancelar? (ex: "cancela o ORC-000123")';
+        await sendWhatsAppMessage(senderNumber, reply);
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+        );
+        return;
+      }
+      const { rows: orcRows } = await pool.query(
+        `SELECT numero, cliente_nome, total, status FROM orcamentos
+         WHERE numero = $1 AND vendedor_id = $2`,
+        [numeroNorm, vendedorId]
+      );
+      if (orcRows.length === 0) {
+        const reply = `Não achei o ${numeroNorm} nos seus orçamentos. Confira o número.`;
+        await sendWhatsAppMessage(senderNumber, reply);
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+        );
+        return;
+      }
+      const orc = orcRows[0];
+      if (orc.status !== 'aberto') {
+        const statusTxt = orc.status === 'venda' ? 'fechado como venda' : 'cancelado';
+        const reply = `O ${numeroNorm} já está ${statusTxt}. Nada a fazer.`;
+        await sendWhatsAppMessage(senderNumber, reply);
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+        );
+        return;
+      }
+      const tipoAcao = intent === 'fechar_venda' ? 'fechar_venda' : 'cancelar';
+      await pool.query(
+        `UPDATE sessoes SET acao_pendente = $1::jsonb WHERE id = $2`,
+        [JSON.stringify({ tipo: tipoAcao, numero: numeroNorm }), currentSessionId]
+      );
+      const verbo = intent === 'fechar_venda' ? 'fechar como *VENDA*' : 'cancelar';
+      const reply = `Confirma ${verbo} o *${numeroNorm}*?\n\nCliente: ${orc.cliente_nome || '—'}\nTotal: R$ ${fmtBRn(orc.total)}\n\nResponda *sim* ou *não*.`;
+      await sendWhatsAppMessage(senderNumber, reply);
+      await pool.query(
+        `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+        [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+      );
+      return;
+    }
+
+    // --- Modo alteração: carrega orçamento alvo e valida ---
+    let orcamentoEmAlteracao: {
+      numero: string;
+      cliente_nome: string | null;
+      itens: any[];
+      total: number;
+    } | null = null;
+
+    if (intent === 'alterar_orcamento') {
+      const numeroNorm = normalizarNumeroOrcamento(refNumero);
+      if (!numeroNorm) {
+        const reply = 'Qual orçamento você quer alterar? Me passa o número (ex: "ORC-000123").';
+        await sendWhatsAppMessage(senderNumber, reply);
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+        );
+        return;
+      }
+      const { rows: orcRows } = await pool.query(
+        `SELECT numero, cliente_nome, itens, total, status FROM orcamentos
+         WHERE numero = $1 AND vendedor_id = $2`,
+        [numeroNorm, vendedorId]
+      );
+      if (orcRows.length === 0) {
+        const reply = `Não achei o ${numeroNorm} nos seus orçamentos.`;
+        await sendWhatsAppMessage(senderNumber, reply);
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+        );
+        return;
+      }
+      if (orcRows[0].status !== 'aberto') {
+        const statusTxt = orcRows[0].status === 'venda' ? 'fechado como venda' : 'cancelado';
+        const reply = `Não dá pra alterar o ${numeroNorm} — ele já está ${statusTxt}.`;
+        await sendWhatsAppMessage(senderNumber, reply);
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+        );
+        return;
+      }
+      orcamentoEmAlteracao = {
+        numero: orcRows[0].numero,
+        cliente_nome: orcRows[0].cliente_nome,
+        itens: orcRows[0].itens || [],
+        total: Number(orcRows[0].total),
+      };
+    }
 
     // Termos vêm pré-estruturados pelo extrator
     const termsToSearch = extractedTerms
@@ -938,6 +1341,21 @@ EXEMPLOS:
       : '(Nenhum produto identificado na mensagem)';
 
     // Build final response
+    const alteracaoBlock = orcamentoEmAlteracao ? `
+MODO ALTERAÇÃO DE ORÇAMENTO — IMPORTANTE:
+O vendedor pediu para ALTERAR o orçamento *${orcamentoEmAlteracao.numero}* (cliente: ${orcamentoEmAlteracao.cliente_nome || '—'}).
+
+Itens ATUAIS do orçamento:
+${orcamentoEmAlteracao.itens.map((it: any, i: number) => `${i + 1}. ${it.descricao}${it.marca ? ' - ' + it.marca : ''} — Qtd: ${it.qtd} x R$ ${Number(it.preco_unit ?? 0).toFixed(2)} = R$ ${Number(it.subtotal ?? 0).toFixed(2)}`).join('\n')}
+Total atual: R$ ${orcamentoEmAlteracao.total.toFixed(2)}
+
+REGRAS DE ALTERAÇÃO:
+1. Interprete o pedido do vendedor sobre o que mudar: adicionar item, remover item, mudar quantidade, trocar produto.
+2. Confirme com ele a lista FINAL de itens antes de salvar.
+3. Quando ele confirmar, chame a função *alterar_orcamento* (NÃO finalizar_orcamento) passando a nova lista completa de itens, total recalculado e cliente_nome (mantenha o atual se não houver mudança).
+4. NÃO crie um orçamento novo. NÃO chame finalizar_orcamento neste modo.
+` : '';
+
     const finalPrompt = `Você é o assistente virtual da Win Distribuidora, atendendo representantes de vendas via WhatsApp.
 Você é responsável por todo o processo: entender o pedido, confirmar os itens encontrados no estoque e gerar o orçamento final. NÃO há atendente humano.
 
@@ -993,6 +1411,10 @@ Esses são os produtos certos? Confirme para eu gerar o orçamento! 👍
 FECHAMENTO DO ORÇAMENTO — REGRA CRÍTICA:
 Quando o vendedor confirmar de forma clara TODOS os itens e quantidades (ex: "ok", "isso", "pode gerar", "fechar orçamento", "manda o total"), você DEVE chamar a função "finalizar_orcamento" com a lista exata de itens, quantidades, preços unitários, subtotais e total. NÃO escreva o orçamento como texto — quem gera a mensagem final com o número do orçamento é o sistema. Você apenas chama a função.
 
+NOME DO CLIENTE — OBRIGATÓRIO:
+Todo orçamento PRECISA ter o nome do cliente. Se o vendedor ainda não informou (não apareceu no histórico da sessão), PERGUNTE antes de finalizar: "Para qual cliente é esse orçamento?". NÃO invente nome. NÃO chame "finalizar_orcamento" sem o nome do cliente em mãos. Só chame a função quando tiver: itens confirmados + nome do cliente.
+
+${alteracaoBlock}
 AMBIGUIDADE — quando perguntar:
 - Se o vendedor mandar uma mensagem que pode significar "começar um pedido novo" mas você está no meio de um orçamento (ex: ele cita um produto totalmente diferente do contexto, ou diz "outro cliente", "outro pedido"), pergunte UMA vez: "Esse é um novo orçamento ou faz parte do atual?". Não pergunte isso em mensagens normais de adição de itens.
 - Se você acabou de listar os itens identificados e a resposta dele for ambígua (ex: só "tá", "blz"), pergunte UMA vez: "Posso finalizar o orçamento agora ou quer adicionar mais algum item?". Não fique repetindo essa pergunta a cada mensagem.`;
@@ -1007,15 +1429,52 @@ AMBIGUIDADE — quando perguntar:
         {
           type: 'function',
           function: {
-            name: 'finalizar_orcamento',
-            description: 'Finaliza o orçamento atual. Chamar SOMENTE depois que o vendedor confirmar de forma clara todos os itens e quantidades.',
+            name: 'alterar_orcamento',
+            description: 'Atualiza um orçamento existente em aberto. Use APENAS quando estiver no MODO ALTERAÇÃO indicado no prompt. Substitui a lista completa de itens pelo novo conjunto fornecido.',
             parameters: {
               type: 'object',
-              required: ['itens', 'total'],
+              required: ['numero', 'cliente_nome', 'itens', 'total'],
+              properties: {
+                numero: {
+                  type: 'string',
+                  description: 'Número do orçamento a alterar (formato ORC-000123). Use o número indicado no MODO ALTERAÇÃO do prompt.',
+                },
+                cliente_nome: {
+                  type: 'string',
+                  description: 'Nome do cliente. Mantenha o nome atual se o vendedor não pediu mudança.',
+                },
+                itens: {
+                  type: 'array',
+                  minItems: 1,
+                  items: {
+                    type: 'object',
+                    required: ['descricao', 'qtd', 'preco_unit', 'subtotal'],
+                    properties: {
+                      descricao: { type: 'string' },
+                      marca: { type: 'string' },
+                      qtd: { type: 'number' },
+                      preco_unit: { type: 'number' },
+                      subtotal: { type: 'number' },
+                    },
+                  },
+                },
+                total: { type: 'number' },
+              },
+            },
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'finalizar_orcamento',
+            description: 'Finaliza o orçamento atual. Chamar SOMENTE depois que o vendedor confirmar de forma clara todos os itens e quantidades E tiver informado o nome do cliente.',
+            parameters: {
+              type: 'object',
+              required: ['cliente_nome', 'itens', 'total'],
               properties: {
                 cliente_nome: {
                   type: 'string',
-                  description: 'Nome do cliente final, apenas se o vendedor mencionou. Caso contrário omita.',
+                  description: 'Nome do cliente final. OBRIGATÓRIO. Se o vendedor ainda não informou, PERGUNTE antes de chamar esta função — NUNCA invente.',
                 },
                 itens: {
                   type: 'array',
@@ -1042,15 +1501,17 @@ AMBIGUIDADE — quando perguntar:
 
     const choice = finalResponse.choices[0].message;
     const toolCall = choice.tool_calls?.find(
-      (tc: any) => tc?.type === 'function' && tc?.function?.name === 'finalizar_orcamento'
+      (tc: any) => tc?.type === 'function' &&
+        (tc?.function?.name === 'finalizar_orcamento' || tc?.function?.name === 'alterar_orcamento')
     ) as any;
 
     if (toolCall) {
+      const fnName = toolCall.function?.name as 'finalizar_orcamento' | 'alterar_orcamento';
       let args: any = {};
       try {
         args = JSON.parse(toolCall.function?.arguments || '{}');
       } catch (e) {
-        console.error('[finalizar_orcamento] JSON parse falhou:', toolCall.function?.arguments);
+        console.error(`[${fnName}] JSON parse falhou:`, toolCall.function?.arguments);
       }
 
       const itens = Array.isArray(args.itens) ? args.itens : [];
@@ -1059,53 +1520,81 @@ AMBIGUIDADE — quando perguntar:
         ? args.cliente_nome.trim()
         : null;
 
-      if (itens.length > 0 && total > 0) {
-        const { rows: seqRows } = await pool.query(`SELECT nextval('orcamento_numero_seq') AS seq`);
-        const seqNum = Number(seqRows[0].seq);
-        const numero = `ORC-${String(seqNum).padStart(6, '0')}`;
-
-        await pool.query(
-          `INSERT INTO orcamentos (numero, sessao_id, vendedor_id, cliente_nome, itens, total)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
-          [numero, currentSessionId, vendedorId, clienteNome, JSON.stringify(itens), total]
-        );
-
-        await pool.query(
-          `UPDATE sessoes SET status = 'orcamento_gerado', encerrada_em = NOW() WHERE id = $1`,
-          [currentSessionId]
-        );
-
-        const fmtBR = (n: number) => n.toFixed(2).replace('.', ',');
-        const linhas = itens.map((it: any, i: number) => {
-          const nome = String(it.descricao ?? '').trim();
-          const marca = String(it.marca ?? '').trim();
-          const nomeUpper = nome.toUpperCase();
-          const marcaJaNoNome = marca && nomeUpper.includes(marca.toUpperCase());
-          const nomeMarca = marca && !marcaJaNoNome ? `${nome} - ${marca}` : nome;
-          const qtd = Number(it.qtd ?? 0);
-          const pu = Number(it.preco_unit ?? 0);
-          const sub = Number(it.subtotal ?? qtd * pu);
-          return `${i + 1}. ${nomeMarca}\n   Qtd: ${qtd} un. x R$ ${fmtBR(pu)} = R$ ${fmtBR(sub)}`;
-        }).join('\n\n');
-
-        const replyText = `📋 *ORÇAMENTO ${numero}*
-—————————————————${clienteNome ? `\nCliente: ${clienteNome}` : ''}
-
-${linhas}
-—————————————————
-💰 *TOTAL: R$ ${fmtBR(total)}*
-—————————————————
-
-Orçamento ${numero} salvo. Para um novo atendimento, é só enviar uma nova mensagem.`;
-
-        await sendWhatsAppMessage(senderNumber, replyText);
+      // Cliente_nome é obrigatório. Se o agente teimou e mandou sem, pergunta em vez de criar/alterar.
+      if (itens.length > 0 && total > 0 && !clienteNome) {
+        const askCliente = 'Antes de fechar, preciso do nome do cliente para esse orçamento. Para quem é? 👤';
+        await sendWhatsAppMessage(senderNumber, askCliente);
         await pool.query(
           `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
-          [currentSessionId, vendedorId, 'assistant', replyText, 'texto']
+          [currentSessionId, vendedorId, 'assistant', askCliente, 'texto']
         );
-        console.log('[orcamento]', { numero, total, itens: itens.length });
+        return;
+      }
+
+      if (itens.length > 0 && total > 0 && clienteNome) {
+        if (fnName === 'alterar_orcamento') {
+          const numeroAlvo = orcamentoEmAlteracao?.numero
+            || normalizarNumeroOrcamento(String(args.numero || ''));
+          if (!numeroAlvo) {
+            console.error('[alterar_orcamento] sem número alvo, ignorando');
+            return;
+          }
+          const { rowCount } = await pool.query(
+            `UPDATE orcamentos
+             SET itens = $1::jsonb, total = $2, cliente_nome = $3, atualizado_em = NOW()
+             WHERE numero = $4 AND vendedor_id = $5 AND status = 'aberto'`,
+            [JSON.stringify(itens), total, clienteNome, numeroAlvo, vendedorId]
+          );
+          if ((rowCount ?? 0) === 0) {
+            const reply = `Não consegui alterar o ${numeroAlvo} (já fechado ou cancelado).`;
+            await sendWhatsAppMessage(senderNumber, reply);
+            await pool.query(
+              `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+              [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+            );
+            return;
+          }
+          const replyText = formatarTextoOrcamento({
+            numero: numeroAlvo,
+            clienteNome,
+            itens,
+            total,
+            cabecalho: `✏️ *ORÇAMENTO ${numeroAlvo} ATUALIZADO*`,
+            rodape: `Orçamento ${numeroAlvo} atualizado e segue em aberto.`,
+          });
+          await sendWhatsAppMessage(senderNumber, replyText);
+          await pool.query(
+            `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+            [currentSessionId, vendedorId, 'assistant', replyText, 'texto']
+          );
+          console.log('[alterar_orcamento]', { numero: numeroAlvo, total, itens: itens.length });
+        } else {
+          const { rows: seqRows } = await pool.query(`SELECT nextval('orcamento_numero_seq') AS seq`);
+          const seqNum = Number(seqRows[0].seq);
+          const numero = `ORC-${String(seqNum).padStart(6, '0')}`;
+
+          await pool.query(
+            `INSERT INTO orcamentos (numero, sessao_id, vendedor_id, cliente_nome, itens, total)
+             VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+            [numero, currentSessionId, vendedorId, clienteNome, JSON.stringify(itens), total]
+          );
+
+          await pool.query(
+            `UPDATE sessoes SET status = 'orcamento_gerado', encerrada_em = NOW() WHERE id = $1`,
+            [currentSessionId]
+          );
+
+          const replyText = formatarTextoOrcamento({ numero, clienteNome, itens, total });
+
+          await sendWhatsAppMessage(senderNumber, replyText);
+          await pool.query(
+            `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+            [currentSessionId, vendedorId, 'assistant', replyText, 'texto']
+          );
+          console.log('[orcamento]', { numero, total, itens: itens.length });
+        }
       } else {
-        console.error('[finalizar_orcamento] args inválidos, ignorando:', args);
+        console.error(`[${fnName}] args inválidos, ignorando:`, args);
       }
     } else {
       const replyText = choice.content;
