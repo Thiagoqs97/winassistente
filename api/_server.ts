@@ -739,51 +739,64 @@ app.post('/api/webhook/evolution', async (req, res) => {
     }));
 
     // Extract product terms with GPT-4o-mini — usa CONVERSA COMPLETA para extrair produtos
+    // Resposta em JSON estruturado + temperature 0 para garantir determinismo e impedir
+    // que o modelo "responda" como chatbot ou alucine variações.
     const extractResponse = await openai.chat.completions.create({
       model: 'gpt-4o-mini',
+      temperature: 0,
+      response_format: { type: 'json_object' },
       messages: [
         {
           role: 'system',
-          content: `Você é um EXTRATOR DE PRODUTOS (não é um chatbot e não responde perguntas). Sua única função: analisar uma conversa WhatsApp e retornar os nomes dos produtos mencionados pelo vendedor que devem ser buscados no estoque.
+          content: `Você NÃO é um chatbot. Você é um EXTRATOR DE TERMOS DE BUSCA. Você NUNCA responde, NUNCA explica, NUNCA se desculpa, NUNCA diz "não localizei". Sua ÚNICA saída é um JSON com a estrutura abaixo.
 
-FORMATO DE SAÍDA (obrigatório):
-- Um produto por linha OU lista separada por vírgulas — escolha o que for mais claro dado o número de itens.
-- Para listas grandes (5+ itens), use uma linha por produto.
-- NUNCA escreva frases, explicações, ou respostas ao usuário. Apenas os nomes.
-- Use nomes específicos quando o sabor/variação for mencionado (ex: "tasty whey chocolate"). Se o vendedor só citou o produto base, retorne só o nome base (ex: "tasty whey").
-- Quando a mensagem for uma planilha ou CSV, extraia TODOS os produtos da lista, um por linha.
+SAÍDA (JSON obrigatório, sem texto extra):
+{
+  "new_session": boolean,   // true SOMENTE se o vendedor pediu novo pedido / outro cliente explicitamente
+  "terms": string[]         // termos de busca a usar contra o estoque, em minúsculas
+}
 
-REGRAS DE INTERPRETAÇÃO:
-1. Considere a CONVERSA INTEIRA, não só a última mensagem.
-2. Se a última mensagem for confirmação ("sim", "ok", "isso", "confirmo", "pode ser") OU pergunta sobre detalhes ("qual sabor?", "quanto custa?", "tem mais?", "quais opções", "quais sabores") — retorne os produtos já discutidos anteriormente na conversa, sem alterar o sabor/variação.
-3. Se novos produtos forem mencionados na última mensagem, inclua-os.
-4. Inclua "NEW_SESSION" SOMENTE quando o vendedor explicitamente disser que quer começar do zero ou pedido para outro cliente (ex: "novo pedido", "outro cliente", "cancela e começa de novo"). NUNCA em confirmações, perguntas ou saudações.
-5. Se nenhum produto foi mencionado em toda a conversa, retorne exatamente "unknown".
-6. Para planilhas/CSV, ignore colunas de quantidade, código, preço — extraia apenas os nomes dos produtos.
+REGRAS PARA "terms":
+1. Use APENAS o nome-base do produto. NÃO invente nem acrescente sabor, gramatura, marca ou variação que o vendedor não tenha dito explicitamente.
+   - "Qual o valor da creatina dux de 300g" → ["creatina dux 300g"]      (vendedor disse 300g, mantém)
+   - "Qual o valor da creatina dux" → ["creatina dux"]                    (sem gramatura, NÃO invente)
+   - "CREATINA DUX" → ["creatina dux"]                                    (NÃO acrescente "300g")
+   - "Quais os sabores do TASTY WHEY?" → ["tasty whey"]                   (pergunta variações → só nome-base)
+   - "Quais sabores tem o whey gold?" → ["whey gold"]                     (idem)
+   - "Tem outro tamanho da creatina dux?" → ["creatina dux"]              (idem)
+2. Se o vendedor citou MÚLTIPLOS produtos / sabores específicos, liste todos.
+   - "Me faz orçamento com 2 tasty whey chocolate e 1 morango" → ["tasty whey chocolate","tasty whey morango"]
+3. Considere a CONVERSA INTEIRA. Para confirmações ("sim","ok","isso") OU perguntas de detalhe ("qual sabor?","quanto custa?","tem mais?","quais opções","quais sabores","tem maior?","tem menor?") — retorne os mesmos termos do último pedido do vendedor, sem alterar sabor/gramatura.
+4. Para planilhas/CSV: extraia TODOS os nomes de produtos, um por item; ignore colunas de quantidade/código/preço.
+5. Para saudações, agradecimentos, mensagens sem produto → "terms": [].
+6. NUNCA escreva frases. NUNCA inclua texto fora do JSON.
 
 EXEMPLOS:
-- Conversa: user "Quero tasty whey" / assistant "Quantos?" / user "Quais opções de sabor"
-  Saída: tasty whey
-- Conversa: user "Me faz orçamento com 2 tasty whey chocolate e 1 morango" / assistant "Confirma?" / user "Sim"
-  Saída: tasty whey chocolate, tasty whey morango
-- Conversa: user "esquece, novo pedido pra outro cliente"
-  Saída: NEW_SESSION
-- Conversa: user "Bom dia"
-  Saída: unknown
-- Conversa: user "Pedido recebido em planilha:\nProduto | Qtd\nCreatina DUX 300g | 2\nWhey Gold 1kg | 5"
-  Saída:
-  creatina dux 300g
-  whey gold 1kg`,
+- "Quais os sabores do TASTY WHEY?" → {"new_session":false,"terms":["tasty whey"]}
+- "Qual o valor da creatina dux de 300g" → {"new_session":false,"terms":["creatina dux 300g"]}
+- "tem maior?" (após pedir creatina dux) → {"new_session":false,"terms":["creatina dux"]}
+- "esquece, novo pedido pra outro cliente" → {"new_session":true,"terms":[]}
+- "Bom dia" → {"new_session":false,"terms":[]}
+- "obrigado" → {"new_session":false,"terms":[]}
+- "Pedido recebido em planilha:\\nProduto | Qtd\\nCreatina DUX 300g | 2\\nWhey Gold 1kg | 5" → {"new_session":false,"terms":["creatina dux 300g","whey gold 1kg"]}`,
         },
         ...historyMessages,
         { role: 'user', content: incomingText },
       ],
     });
 
-    const extractedContent = extractResponse.choices[0].message.content || 'unknown';
-    console.log('[extract]', { incomingText, extractedContent });
+    const rawExtract = extractResponse.choices[0].message.content || '{}';
+    let parsedExtract: { new_session?: boolean; terms?: string[] } = {};
+    try {
+      parsedExtract = JSON.parse(rawExtract);
+    } catch {
+      console.error('[extract] JSON parse failed, raw:', rawExtract);
+    }
+    const newSession = parsedExtract.new_session === true;
+    const extractedTerms = Array.isArray(parsedExtract.terms) ? parsedExtract.terms : [];
+    console.log('[extract]', { incomingText, newSession, extractedTerms });
 
-    if (extractedContent.includes('NEW_SESSION')) {
+    if (newSession) {
       await pool.query(`UPDATE sessoes SET status = 'encerrada', encerrada_em = NOW() WHERE id = $1`, [currentSessionId]);
       const { rows: newSessionRows } = await pool.query(
         `INSERT INTO sessoes (vendedor_id) VALUES ($1) RETURNING id`,
@@ -799,11 +812,10 @@ EXEMPLOS:
     );
     historyMessages.push({ role: 'user', content: incomingText });
 
-    // Multi-strategy product search
-    const termsToSearch = extractedContent
-      .split(/[,\n]/)
-      .map(s => s.replace('NEW_SESSION', '').replace(/^\d+[\.\)\-]\s*/, '').trim())
-      .filter(s => s.length > 2 && s.toLowerCase() !== 'unknown');
+    // Termos vêm pré-estruturados pelo extrator
+    const termsToSearch = extractedTerms
+      .map(s => String(s).trim().toLowerCase())
+      .filter(s => s.length > 2);
 
     const groupedResults = await searchProducts(termsToSearch);
 
