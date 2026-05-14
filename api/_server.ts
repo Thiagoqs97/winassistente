@@ -420,10 +420,62 @@ app.get('/api/sessoes/:sessaoId/mensagens', async (req, res) => {
 });
 
 // --- Multi-strategy product search ---
+// Limite alto por termo: quando o vendedor pergunta "quais sabores do X", precisamos
+// retornar TODAS as variações; 30 cobre listas grandes sem estourar o prompt.
+const MAX_PER_TERM = 30;
+
+// Stop words PT-BR que não ajudam na busca por produto
+const STOP_WORDS = new Set([
+  'de', 'da', 'do', 'das', 'dos', 'com', 'sem', 'para', 'por',
+  'em', 'no', 'na', 'nos', 'nas', 'um', 'uma', 'o', 'a', 'os', 'as',
+]);
+
+// Normaliza o termo de busca:
+// - "300g" / "300gr" / "300gramas" → "300 g" (separa número e unidade)
+// - "1kg" → "1 kg"
+// - "500ml" → "500 ml"
+// - Remove pontuação que atrapalha o split
+function normalizeTerm(term: string): string {
+  return term
+    .toLowerCase()
+    .replace(/(\d+)\s*(gramas?|gr|g)\b/gi, '$1 g')
+    .replace(/(\d+)\s*(quilos?|kgs?|kg)\b/gi, '$1 kg')
+    .replace(/(\d+)\s*(mililitros?|ml)\b/gi, '$1 ml')
+    .replace(/(\d+)\s*(litros?|lts?|l)\b/gi, '$1 l')
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Extrai palavras-chave significativas do termo normalizado
+// - palavras-texto (>= 3 chars, não stop word): peso ALTO, exigidas (AND)
+// - números/unidades: peso BAIXO, opcionais (filtragem soft no rank)
+function extractKeywords(normalized: string): { strong: string[]; weak: string[] } {
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  const strong: string[] = [];
+  const weak: string[] = [];
+  for (const tok of tokens) {
+    if (STOP_WORDS.has(tok)) continue;
+    if (/^\d+$/.test(tok)) {
+      weak.push(tok);
+    } else if (tok.length >= 3) {
+      strong.push(tok);
+    } else if (/^(g|kg|ml|l)$/i.test(tok)) {
+      weak.push(tok.toLowerCase());
+    }
+  }
+  return { strong, weak };
+}
+
 async function searchProducts(terms: string[]): Promise<{ term: string; products: any[] }[]> {
   if (terms.length === 0) return [];
 
-  // Strategy 1 + 2 (batched): trigram similarity AND substring ILIKE, all terms in one query
+  const byTerm = new Map<string, Map<number, any>>(terms.map(t => [t, new Map()]));
+
+  // Strategy 1+2 (batched): trigram similarity + substring ILIKE no termo inteiro
+  // Tie-break determinístico (ORDER BY sml DESC, p.id ASC) — sem ele a ordem muda
+  // entre queries quando vários produtos têm a mesma similaridade, devolvendo top-N
+  // diferentes a cada chamada.
   const { rows: batchRows } = await pool.query(`
     WITH term_list AS (SELECT UNNEST($1::text[]) AS term),
     matches AS (
@@ -433,7 +485,7 @@ async function searchProducts(terms: string[]): Promise<{ term: string; products
         GREATEST(
           similarity(unaccent(lower(p.descricao)), unaccent(lower(t.term))),
           CASE WHEN unaccent(lower(p.descricao)) ILIKE '%' || unaccent(lower(t.term)) || '%'
-               THEN 0.15 ELSE 0 END
+               THEN 0.5 ELSE 0 END
         ) AS sml
       FROM products p
       CROSS JOIN term_list t
@@ -444,46 +496,66 @@ async function searchProducts(terms: string[]): Promise<{ term: string; products
         )
     ),
     ranked AS (
-      SELECT *, ROW_NUMBER() OVER (PARTITION BY term ORDER BY sml DESC) AS rn
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY term ORDER BY sml DESC, id ASC) AS rn
       FROM matches
     )
     SELECT id, codigo, descricao, preco_venda, marca, embalagem, term, sml
-    FROM ranked WHERE rn <= 8
-  `, [terms]);
+    FROM ranked WHERE rn <= $2
+  `, [terms, MAX_PER_TERM]);
 
-  // Group batch results by term
-  const byTerm = new Map<string, Map<number, any>>(terms.map(t => [t, new Map()]));
   for (const row of batchRows) {
     const m = byTerm.get(row.term);
     if (m && !m.has(row.id)) m.set(row.id, row);
   }
 
-  // Strategy 3: word-by-word ILIKE for multi-word terms that returned few results
+  // Strategy 3: keyword-based ILIKE — SEMPRE roda para termos multi-palavra.
+  // Faz AND nas palavras-fortes (nome do produto, marca) e bonifica matches
+  // que contêm também os números/unidades. Isso permite encontrar
+  // "Creatina Dux 300 gramas" a partir de "creatina dux 300g".
   for (const term of terms) {
     const m = byTerm.get(term)!;
-    if (m.size >= 3) continue;
-    const words = term.split(/\s+/).filter(w => w.length >= 3);
-    if (words.length < 2) continue;
+    const { strong, weak } = extractKeywords(normalizeTerm(term));
 
-    const conds = words
+    if (strong.length === 0) continue;
+
+    // Monta condição AND nas palavras fortes
+    const strongConds = strong
       .map((_, i) => `unaccent(lower(descricao)) ILIKE '%' || unaccent(lower($${i + 1})) || '%'`)
       .join(' AND ');
 
-    const { rows: wRows } = await pool.query(
-      `SELECT id, codigo, descricao, preco_venda, marca, embalagem, 0.09::float AS sml
-       FROM products WHERE ativo = true AND (${conds}) LIMIT 15`,
-      words
+    // Bônus de similaridade por cada palavra-fraca (número/unidade) presente
+    const weakBonusExpr = weak.length > 0
+      ? weak.map((_, i) =>
+          `(CASE WHEN unaccent(lower(descricao)) ILIKE '%' || unaccent(lower($${strong.length + i + 1})) || '%' THEN 0.1 ELSE 0 END)`
+        ).join(' + ')
+      : '0';
+
+    const { rows: kwRows } = await pool.query(
+      `SELECT id, codigo, descricao, preco_venda, marca, embalagem,
+              (0.3 + ${weakBonusExpr})::float AS sml
+       FROM products
+       WHERE ativo = true AND (${strongConds})
+       ORDER BY sml DESC, id ASC
+       LIMIT $${strong.length + weak.length + 1}`,
+      [...strong, ...weak, MAX_PER_TERM]
     );
-    for (const row of wRows) {
-      if (!m.has(row.id)) m.set(row.id, { ...row, term });
+
+    for (const row of kwRows) {
+      const existing = m.get(row.id);
+      if (!existing) {
+        m.set(row.id, { ...row, term });
+      } else if (row.sml > existing.sml) {
+        // Strategy 3 deu sml maior — atualiza para subir no ranking final
+        m.set(row.id, { ...row, term });
+      }
     }
   }
 
   return terms.map(term => ({
     term,
     products: Array.from(byTerm.get(term)!.values())
-      .sort((a, b) => b.sml - a.sml)
-      .slice(0, 8),
+      .sort((a, b) => (b.sml - a.sml) || (a.id - b.id))
+      .slice(0, MAX_PER_TERM),
   }));
 }
 
@@ -774,7 +846,8 @@ Instruções:
 4. Após a confirmação dos itens, calcule o total e gere o orçamento completo.
 5. NÃO invente produto ou preço que não esteja na lista. Se algum grupo mostrar "Nenhum produto encontrado", informe que o item não está em estoque.
 6. Responda SEMPRE em português do Brasil.
-7. VARIAÇÕES DE PRODUTO — MUITO IMPORTANTE: Se o vendedor perguntou sobre sabores, tamanhos ou opções de um produto (ex: "quais sabores?", "quais opções?", "tem de 1kg?"), E o estoque trouxe múltiplos produtos com o mesmo nome-base mas sabores/gramas diferentes: NÃO peça confirmação do produto, LISTE as variações disponíveis como opções. Exemplo de resposta correta: "O *Tasty Whey* tem as seguintes opções:\n• Chocolate Suíço 900g – R$ 89,90\n• Morango 900g – R$ 89,90\n• Baunilha 1kg – R$ 99,90\nQual você quer?" — Da mesma forma, se o vendedor pediu apenas o nome-base sem especificar sabor/tamanho e existem variações no estoque, pergunte qual variação ele deseja antes de confirmar.
+7. VARIAÇÕES DE PRODUTO — MUITO IMPORTANTE: Se o vendedor perguntou sobre sabores, tamanhos ou opções de um produto (ex: "quais sabores?", "quais opções?", "tem de 1kg?"), E o estoque trouxe múltiplos produtos com o mesmo nome-base mas sabores/gramas diferentes: NÃO peça confirmação do produto, LISTE TODAS as variações disponíveis como opções. REGRA ABSOLUTA: você DEVE listar TODOS os itens trazidos no grupo correspondente — NÃO resuma, NÃO selecione um subconjunto, NÃO omita nenhum. Se o grupo trouxe 12 sabores, mostre os 12. Se trouxe 3, mostre os 3. A lista é a fonte de verdade. Exemplo de resposta correta: "O *Tasty Whey* tem as seguintes opções:\n• Chocolate Suíço 900g – R$ 189,90\n• Morango 900g – R$ 128,80\n• Baunilha 1kg – R$ 199,90\n...(todos os demais)\nQual você quer?" — Da mesma forma, se o vendedor pediu apenas o nome-base sem especificar sabor/tamanho e existem variações no estoque, pergunte qual variação ele deseja antes de confirmar, sempre exibindo a lista COMPLETA.
+8. CONSISTÊNCIA: a lista de produtos no grupo é determinística. Se o vendedor perguntar duas vezes a mesma coisa, a resposta deve trazer EXATAMENTE os mesmos itens, na mesma ordem em que aparecem na lista do estoque. Nunca reordene, nunca filtre por critério próprio.
 
 FORMATAÇÃO — MUITO IMPORTANTE (você está no WhatsApp, NÃO use tabelas markdown com |):
 
