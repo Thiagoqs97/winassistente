@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { PackageOpen, MessageSquare, Settings, Upload, History } from 'lucide-react';
+import { PackageOpen, MessageSquare, Settings, Upload, History, FileText } from 'lucide-react';
 import { cn } from './lib/utils';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'import' | 'products' | 'settings' | 'history'>('import');
+  const [activeTab, setActiveTab] = useState<'import' | 'products' | 'settings' | 'history' | 'orcamentos'>('import');
 
   return (
     <div className="flex flex-col h-screen bg-[#020617] text-slate-200 font-sans overflow-hidden relative">
@@ -33,6 +33,7 @@ export default function App() {
             <SidebarItem icon={<Upload size={16} />} label="Importação" active={activeTab === 'import'} onClick={() => setActiveTab('import')} />
             <SidebarItem icon={<PackageOpen size={16} />} label="Produtos" active={activeTab === 'products'} onClick={() => setActiveTab('products')} />
             <SidebarItem icon={<History size={16} />} label="Histórico" active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
+            <SidebarItem icon={<FileText size={16} />} label="Orçamentos" active={activeTab === 'orcamentos'} onClick={() => setActiveTab('orcamentos')} />
             <SidebarItem icon={<Settings size={16} />} label="Configurações" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
           </div>
 
@@ -47,6 +48,7 @@ export default function App() {
             {activeTab === 'import' && <ImportTab />}
             {activeTab === 'products' && <ProductsTab />}
             {activeTab === 'history' && <HistoryTab />}
+            {activeTab === 'orcamentos' && <OrcamentosTab />}
             {activeTab === 'settings' && <SettingsTab />}
           </div>
         </main>
@@ -338,6 +340,162 @@ function HistoryTab() {
                 <p className="whitespace-pre-wrap text-xs leading-relaxed text-slate-200">{m.conteudo}</p>
               </div>
             ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function OrcamentosTab() {
+  const [list, setList] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filters, setFilters] = useState({ numero: '', cliente_nome: '', data_de: '', data_ate: '', status: '' });
+  const [selected, setSelected] = useState<any | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const qs = new URLSearchParams();
+      (Object.entries(filters) as [string, string][]).forEach(([k, v]) => { if (v) qs.set(k, v); });
+      const res = await fetch(`/api/orcamentos?${qs.toString()}`);
+      const data = await res.json();
+      setList(Array.isArray(data) ? data : []);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const openDetail = async (numero: string) => {
+    setDetailLoading(true);
+    setSelected({ numero });
+    try {
+      const res = await fetch(`/api/orcamentos/${numero}`);
+      setSelected(await res.json());
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const cancelar = async (numero: string) => {
+    if (!confirm(`Cancelar o orçamento ${numero}?`)) return;
+    await fetch(`/api/orcamentos/${numero}/cancelar`, { method: 'PATCH' });
+    await load();
+    if (selected?.numero === numero) await openDetail(numero);
+  };
+
+  const fmtBR = (n: any) => Number(n ?? 0).toFixed(2).replace('.', ',');
+  const statusBadge = (s: string) => s === 'finalizado'
+    ? 'bg-emerald-500/20 text-emerald-400'
+    : 'bg-rose-500/20 text-rose-400';
+
+  return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div>
+        <h2 className="text-4xl font-bold text-white">Orçamentos</h2>
+        <p className="text-slate-400 mt-2">Consulte e gerencie orçamentos gerados pelos vendedores.</p>
+      </div>
+
+      <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-4">
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+          <input value={filters.numero} onChange={e => setFilters({ ...filters, numero: e.target.value })} placeholder="Nº orçamento" className="md:col-span-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-slate-500" />
+          <input value={filters.cliente_nome} onChange={e => setFilters({ ...filters, cliente_nome: e.target.value })} placeholder="Cliente" className="md:col-span-2 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-slate-500" />
+          <input type="date" value={filters.data_de} onChange={e => setFilters({ ...filters, data_de: e.target.value })} className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white" />
+          <input type="date" value={filters.data_ate} onChange={e => setFilters({ ...filters, data_ate: e.target.value })} className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white" />
+          <select value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })} className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white">
+            <option value="">Todos os status</option>
+            <option value="finalizado">Finalizado</option>
+            <option value="cancelado">Cancelado</option>
+          </select>
+        </div>
+        <div className="flex gap-2 mt-3">
+          <button onClick={load} className="px-4 py-2 bg-indigo-500/20 border border-indigo-500/30 hover:bg-indigo-500/30 text-indigo-200 text-sm rounded-xl transition-colors">Filtrar</button>
+          <button onClick={() => { setFilters({ numero: '', cliente_nome: '', data_de: '', data_ate: '', status: '' }); setTimeout(load, 0); }} className="px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-sm rounded-xl transition-colors">Limpar</button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden">
+          <div className="p-4 border-b border-white/10 flex items-center justify-between">
+            <h3 className="font-bold text-white text-sm">Resultados</h3>
+            <span className="text-xs text-slate-500">{list.length}</span>
+          </div>
+          <div className="overflow-auto max-h-[60vh]">
+            {loading ? (
+              <p className="p-4 text-slate-500 text-sm">Carregando...</p>
+            ) : list.length === 0 ? (
+              <p className="p-4 text-slate-500 text-sm">Nenhum orçamento encontrado.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="text-[10px] uppercase tracking-widest text-slate-500 border-b border-white/10">
+                  <tr>
+                    <th className="text-left p-3">Nº</th>
+                    <th className="text-left p-3">Data</th>
+                    <th className="text-left p-3">Vendedor</th>
+                    <th className="text-left p-3">Cliente</th>
+                    <th className="text-right p-3">Itens</th>
+                    <th className="text-right p-3">Total</th>
+                    <th className="text-center p-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {list.map(o => (
+                    <tr key={o.id} onClick={() => openDetail(o.numero)} className={cn('border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors', selected?.numero === o.numero && 'bg-indigo-500/10')}>
+                      <td className="p-3 font-mono text-xs text-indigo-300">{o.numero}</td>
+                      <td className="p-3 text-xs text-slate-400">{new Date(o.criado_em).toLocaleString('pt-BR')}</td>
+                      <td className="p-3 text-xs text-slate-300">{o.vendedor_nome || o.vendedor_whatsapp || '—'}</td>
+                      <td className="p-3 text-xs text-slate-300">{o.cliente_nome || '—'}</td>
+                      <td className="p-3 text-xs text-slate-400 text-right">{o.qtd_itens}</td>
+                      <td className="p-3 text-xs text-white text-right font-medium">R$ {fmtBR(o.total)}</td>
+                      <td className="p-3 text-center"><span className={cn('text-[10px] font-bold px-2 py-0.5 rounded', statusBadge(o.status))}>{o.status}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col">
+          <div className="p-4 border-b border-white/10">
+            <h3 className="font-bold text-white text-sm">Detalhe</h3>
+          </div>
+          <div className="overflow-auto flex-1 p-4">
+            {!selected ? (
+              <p className="text-slate-500 text-sm">Selecione um orçamento.</p>
+            ) : detailLoading || !selected.itens ? (
+              <p className="text-slate-500 text-sm">Carregando...</p>
+            ) : (
+              <div className="space-y-4">
+                <div>
+                  <p className="font-mono text-xs text-indigo-300">{selected.numero}</p>
+                  <p className="text-xs text-slate-500 mt-1">{new Date(selected.criado_em).toLocaleString('pt-BR')}</p>
+                  <span className={cn('inline-block mt-2 text-[10px] font-bold px-2 py-0.5 rounded', statusBadge(selected.status))}>{selected.status}</span>
+                </div>
+                <div className="text-xs text-slate-400">
+                  <p><span className="text-slate-500">Vendedor:</span> {selected.vendedor_nome || selected.vendedor_whatsapp || '—'}</p>
+                  {selected.cliente_nome && <p><span className="text-slate-500">Cliente:</span> {selected.cliente_nome}</p>}
+                </div>
+                <div className="border-t border-white/10 pt-3 space-y-2">
+                  {(selected.itens as any[]).map((it: any, i: number) => (
+                    <div key={i} className="text-xs">
+                      <p className="text-slate-200 font-medium">{i + 1}. {it.descricao}{it.marca && !String(it.descricao).toUpperCase().includes(String(it.marca).toUpperCase()) ? ` - ${it.marca}` : ''}</p>
+                      <p className="text-slate-400 mt-0.5">Qtd: {it.qtd} x R$ {fmtBR(it.preco_unit)} = <span className="text-white font-medium">R$ {fmtBR(it.subtotal)}</span></p>
+                    </div>
+                  ))}
+                </div>
+                <div className="border-t border-white/10 pt-3 flex items-center justify-between">
+                  <span className="text-xs text-slate-400">Total</span>
+                  <span className="text-lg font-bold text-white">R$ {fmtBR(selected.total)}</span>
+                </div>
+                {selected.status === 'finalizado' && (
+                  <button onClick={() => cancelar(selected.numero)} className="w-full px-4 py-2 bg-rose-500/10 border border-rose-500/30 hover:bg-rose-500/20 text-rose-300 text-sm rounded-xl transition-colors">Cancelar orçamento</button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
