@@ -738,11 +738,11 @@ app.post('/api/webhook/evolution', async (req, res) => {
       content: row.conteudo,
     }));
 
-    // Extract product terms with GPT-4o-mini — usa CONVERSA COMPLETA para extrair produtos
+    // Extract product terms — usa CONVERSA COMPLETA para extrair produtos
     // Resposta em JSON estruturado + temperature 0 para garantir determinismo e impedir
     // que o modelo "responda" como chatbot ou alucine variações.
     const extractResponse = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-4.1',
       temperature: 0,
       response_format: { type: 'json_object' },
       messages: [
@@ -886,7 +886,7 @@ Qtd: [N] un. × R$ [X] = *R$ [Y]*
 Há mais algum item para adicionar?`;
 
     const finalResponse = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-4.1',
       messages: [
         { role: 'system', content: finalPrompt },
         ...historyMessages,
