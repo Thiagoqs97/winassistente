@@ -834,9 +834,16 @@ EXEMPLOS:
     const stockContext = groupedResults.length > 0
       ? groupedResults.map(g =>
           `[${g.term}]\n${g.products.length > 0
-            ? g.products.map(p =>
-                `- ${p.descricao}${p.marca ? ' – ' + p.marca : ''} | R$ ${p.preco_venda ?? 'consultar'}`
-              ).join('\n')
+            ? g.products.map(p => {
+                const desc = String(p.descricao ?? '').trim();
+                const marca = String(p.marca ?? '').trim();
+                const descUpper = desc.toUpperCase();
+                const marcaUpper = marca.toUpperCase();
+                const marcaJaNoNome = marcaUpper && descUpper.includes(marcaUpper);
+                const nomeComMarca = marca && !marcaJaNoNome ? `${desc} - ${marca}` : desc;
+                const preco = p.preco_venda != null ? `R$ ${p.preco_venda}` : 'consultar';
+                return `- ${nomeComMarca} - ${preco}`;
+              }).join('\n')
             : '- Nenhum produto encontrado no estoque'}`
         ).join('\n\n')
       : '(Nenhum produto identificado na mensagem)';
@@ -858,7 +865,24 @@ Instruções:
 4. Após a confirmação dos itens, calcule o total e gere o orçamento completo.
 5. NÃO invente produto ou preço que não esteja na lista. Se algum grupo mostrar "Nenhum produto encontrado", informe que o item não está em estoque.
 6. Responda SEMPRE em português do Brasil.
-7. VARIAÇÕES DE PRODUTO — MUITO IMPORTANTE: Se o vendedor perguntou sobre sabores, tamanhos ou opções de um produto (ex: "quais sabores?", "quais opções?", "tem de 1kg?"), E o estoque trouxe múltiplos produtos com o mesmo nome-base mas sabores/gramas diferentes: NÃO peça confirmação do produto, LISTE TODAS as variações disponíveis como opções. REGRA ABSOLUTA: você DEVE listar TODOS os itens trazidos no grupo correspondente — NÃO resuma, NÃO selecione um subconjunto, NÃO omita nenhum. Se o grupo trouxe 12 sabores, mostre os 12. Se trouxe 3, mostre os 3. A lista é a fonte de verdade. Exemplo de resposta correta: "O *Tasty Whey* tem as seguintes opções:\n• Chocolate Suíço 900g – R$ 189,90\n• Morango 900g – R$ 128,80\n• Baunilha 1kg – R$ 199,90\n...(todos os demais)\nQual você quer?" — Da mesma forma, se o vendedor pediu apenas o nome-base sem especificar sabor/tamanho e existem variações no estoque, pergunte qual variação ele deseja antes de confirmar, sempre exibindo a lista COMPLETA.
+7. VARIAÇÕES DE PRODUTO — MUITO IMPORTANTE: Se o vendedor perguntou sobre sabores, tamanhos ou opções de um produto (ex: "quais sabores?", "quais opções?", "tem de 1kg?", "tem creatina?"), E o estoque trouxe múltiplos produtos com o mesmo nome-base: NÃO peça confirmação do produto, LISTE TODAS as variações disponíveis como opções. REGRA ABSOLUTA: você DEVE listar TODOS os itens trazidos no grupo correspondente — NÃO resuma, NÃO selecione um subconjunto, NÃO omita nenhum. Se o grupo trouxe 12 sabores, mostre os 12. Se trouxe 3, mostre os 3. A lista é a fonte de verdade. Da mesma forma, se o vendedor pediu apenas o nome-base sem especificar sabor/tamanho e existem variações no estoque, pergunte qual variação ele deseja antes de confirmar, sempre exibindo a lista COMPLETA.
+
+   FORMATO OBRIGATÓRIO E ÚNICO para listar variações/opções (NUNCA varie este formato, NUNCA use bullets •, NUNCA use ✅, NUNCA use negrito, NUNCA use |, NUNCA use tabela):
+   Frase curta de abertura em uma linha (ex: "Temos as seguintes opções de Creatina:")
+   [linha em branco]
+   1. NOME DO PRODUTO - MARCA - R$ PREÇO
+   2. NOME DO PRODUTO - MARCA - R$ PREÇO
+   3. NOME DO PRODUTO - MARCA - R$ PREÇO
+   ...
+   [linha em branco]
+   Pergunta final curta (ex: "Qual delas você quer?")
+
+   Regras do formato:
+   - Cada item começa com número seguido de ponto e espaço: "1. ", "2. ", "3. " ...
+   - Separador entre nome, marca e preço é sempre um hífen com espaço em cada lado: " - ".
+   - O preço sempre no formato "R$ 189,90" (com R$, espaço e vírgula decimal).
+   - Se a marca já estiver embutida no nome (ex: "CREATINA 100% PURE 150G - ABSOLUT" e marca = "ABSOLUT"), NÃO repita a marca; mostre só "CREATINA 100% PURE 150G - ABSOLUT - R$ 19,90".
+   - Não inclua emojis nos itens da lista. Não use negrito em nenhum item. Não use marcadores antes do número.
 8. CONSISTÊNCIA: a lista de produtos no grupo é determinística. Se o vendedor perguntar duas vezes a mesma coisa, a resposta deve trazer EXATAMENTE os mesmos itens, na mesma ordem em que aparecem na lista do estoque. Nunca reordene, nunca filtre por critério próprio.
 
 FORMATAÇÃO — VOCÊ ESTÁ NO WHATSAPP. SIGA ESTAS REGRAS ESTRITAMENTE:
