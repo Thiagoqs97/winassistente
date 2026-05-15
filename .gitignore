@@ -9,3 +9,10 @@ coverage/
 
 .vercel
 .env*.local
+
+# Local-only data & ad-hoc DB scripts (PII / hardcoded credentials)
+data/
+dbtest.mjs
+run-sql.ts
+qrcode.png
+metadata.json

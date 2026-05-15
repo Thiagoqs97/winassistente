@@ -152,6 +152,52 @@ async function initDB() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orcamentos_cliente ON orcamentos(lower(cliente_nome));`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orcamentos_vendedor_status ON orcamentos(vendedor_id, status, criado_em DESC);`);
 
+    // --- Clientes ---
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS clientes (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        externo_id TEXT UNIQUE,
+        codigo TEXT,
+        nome TEXT NOT NULL,
+        fantasia TEXT,
+        tipo_pessoa TEXT,
+        cpf_cnpj TEXT,
+        ie_rg TEXT,
+        ie_isento TEXT,
+        endereco TEXT,
+        numero TEXT,
+        complemento TEXT,
+        bairro TEXT,
+        cep TEXT,
+        cidade TEXT,
+        uf TEXT,
+        fone TEXT,
+        celular TEXT,
+        email TEXT,
+        email_nfe TEXT,
+        contatos TEXT,
+        data_nascimento DATE,
+        tipo_contato TEXT,
+        vendedor TEXT,
+        observacoes TEXT,
+        regime_tributario TEXT,
+        cliente_desde DATE,
+        limite_credito NUMERIC(12,2) DEFAULT 0,
+        situacao TEXT DEFAULT 'Ativo',
+        ativo BOOLEAN DEFAULT true,
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em TIMESTAMP
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS trgm_idx_clientes_nome ON clientes USING GIN (lower(nome) gin_trgm_ops);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS trgm_idx_clientes_fantasia ON clientes USING GIN (lower(coalesce(fantasia, '')) gin_trgm_ops);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_clientes_cpf_cnpj ON clientes(cpf_cnpj);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_clientes_externo_id ON clientes(externo_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_clientes_ativo_nome ON clientes(ativo, lower(nome));`);
+
+    await client.query(`ALTER TABLE orcamentos ADD COLUMN IF NOT EXISTS cliente_id UUID REFERENCES clientes(id) ON DELETE SET NULL;`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_orcamentos_cliente_id ON orcamentos(cliente_id);`);
+
     const defaultPrompt = `1. O agente tem acesso ao histórico completo da sessão ativa e deve utilizá-lo para entender pedidos construídos em múltiplas mensagens.
 2. O agente confirma os itens identificados antes de gerar qualquer orçamento, perguntando ao vendedor se os produtos encontrados correspondem ao que foi solicitado.
 3. O agente gera e envia o orçamento completo após a confirmação dos itens, calculando o total, sem necessidade de intervenção humana.
@@ -563,6 +609,145 @@ app.patch('/api/orcamentos/:numero/reabrir', async (req, res) => {
   }
 });
 
+// --- Clientes: CRUD + busca ---
+
+// Lista / busca paginada
+app.get('/api/clientes', async (req, res) => {
+  try {
+    const { q, ativo, tipo_pessoa, cidade, uf } = req.query as Record<string, string | undefined>;
+    const limit = Math.min(parseInt((req.query.limit as string) || '50'), 200);
+    const offset = parseInt((req.query.offset as string) || '0');
+
+    if (q && q.trim().length > 0) {
+      const matches = await searchClientes(q.trim(), limit);
+      return res.json(matches);
+    }
+
+    const conds: string[] = [];
+    const params: any[] = [];
+    const push = (sql: string, val: any) => { params.push(val); conds.push(sql.replace('?', `$${params.length}`)); };
+    if (ativo === 'true') push('ativo = ?', true);
+    if (ativo === 'false') push('ativo = ?', false);
+    if (tipo_pessoa) push('tipo_pessoa = ?', tipo_pessoa);
+    if (cidade) push('lower(coalesce(cidade, \'\')) LIKE ?', `%${cidade.toLowerCase()}%`);
+    if (uf) push('upper(coalesce(uf, \'\')) = ?', uf.toUpperCase());
+    const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
+    params.push(limit, offset);
+
+    const { rows } = await pool.query(
+      `SELECT id, externo_id, nome, fantasia, tipo_pessoa, cpf_cnpj, cidade, uf,
+              fone, celular, email, ativo, criado_em
+       FROM clientes
+       ${where}
+       ORDER BY nome ASC
+       LIMIT $${params.length - 1} OFFSET $${params.length}`,
+      params
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('GET /api/clientes error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Detalhe
+app.get('/api/clientes/:id', async (req, res) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM clientes WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Cliente não encontrado' });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Criação
+app.post('/api/clientes', async (req, res) => {
+  try {
+    const body = req.body || {};
+    if (!body.nome || String(body.nome).trim().length === 0) {
+      return res.status(400).json({ error: 'Nome é obrigatório' });
+    }
+    const fields = [
+      'externo_id', 'codigo', 'nome', 'fantasia', 'tipo_pessoa', 'cpf_cnpj',
+      'ie_rg', 'ie_isento', 'endereco', 'numero', 'complemento', 'bairro', 'cep',
+      'cidade', 'uf', 'fone', 'celular', 'email', 'email_nfe', 'contatos',
+      'data_nascimento', 'tipo_contato', 'vendedor', 'observacoes',
+      'regime_tributario', 'cliente_desde', 'limite_credito', 'situacao'
+    ];
+    const cols: string[] = [];
+    const placeholders: string[] = [];
+    const values: any[] = [];
+    for (const f of fields) {
+      if (body[f] !== undefined) {
+        cols.push(f);
+        placeholders.push(`$${values.length + 1}`);
+        values.push(body[f] === '' ? null : body[f]);
+      }
+    }
+    if (!cols.includes('nome')) {
+      cols.push('nome');
+      placeholders.push(`$${values.length + 1}`);
+      values.push(String(body.nome).trim());
+    }
+    const { rows } = await pool.query(
+      `INSERT INTO clientes (${cols.join(', ')}) VALUES (${placeholders.join(', ')}) RETURNING *`,
+      values
+    );
+    res.status(201).json(rows[0]);
+  } catch (err: any) {
+    console.error('POST /api/clientes error:', err);
+    res.status(500).json({ error: err.message || 'Database error' });
+  }
+});
+
+// Atualização
+app.put('/api/clientes/:id', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const fields = [
+      'externo_id', 'codigo', 'nome', 'fantasia', 'tipo_pessoa', 'cpf_cnpj',
+      'ie_rg', 'ie_isento', 'endereco', 'numero', 'complemento', 'bairro', 'cep',
+      'cidade', 'uf', 'fone', 'celular', 'email', 'email_nfe', 'contatos',
+      'data_nascimento', 'tipo_contato', 'vendedor', 'observacoes',
+      'regime_tributario', 'cliente_desde', 'limite_credito', 'situacao', 'ativo'
+    ];
+    const sets: string[] = [];
+    const values: any[] = [];
+    for (const f of fields) {
+      if (Object.prototype.hasOwnProperty.call(body, f)) {
+        values.push(body[f] === '' ? null : body[f]);
+        sets.push(`${f} = $${values.length}`);
+      }
+    }
+    if (sets.length === 0) return res.status(400).json({ error: 'Nada para atualizar' });
+    values.push(req.params.id);
+    const { rows } = await pool.query(
+      `UPDATE clientes SET ${sets.join(', ')}, atualizado_em = NOW() WHERE id = $${values.length} RETURNING *`,
+      values
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Cliente não encontrado' });
+    res.json(rows[0]);
+  } catch (err: any) {
+    console.error('PUT /api/clientes error:', err);
+    res.status(500).json({ error: err.message || 'Database error' });
+  }
+});
+
+// Desativar (soft delete)
+app.delete('/api/clientes/:id', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE clientes SET ativo = false, atualizado_em = NOW() WHERE id = $1 RETURNING id`,
+      [req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Cliente não encontrado' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // --- Onboarding: parse de nome do vendedor a partir da mensagem ---
 // Aceita textos como "João", "meu nome é Maria", "sou o Pedro", "aqui é a Ana".
 // Rejeita textos que parecem pedido/produto (muito longos, com números/preços).
@@ -592,6 +777,40 @@ function parseConfirmacao(text: string): 'sim' | 'nao' | 'ambiguo' {
   if (/^(sim|s|ok|pode|isso|confirma|confirmo|confirmar|positivo|claro|fecha|manda|vai|sim por favor|sim pode|com certeza|certeza)\b/.test(t)) return 'sim';
   if (/^(nao|não|n|negativo|cancela isso|esquece|deixa|nem|para|pare|errado|nao quero|não quero)\b/.test(t)) return 'nao';
   return 'ambiguo';
+}
+
+// --- Parse de resposta numérica (escolha de cliente entre opções) ---
+// Aceita "1", "2", "opção 3", "o primeiro", "novo", "cadastra", "cancela".
+function parseEscolha(text: string, totalOpcoes: number): { kind: 'numero'; idx: number } | { kind: 'novo' } | { kind: 'cancela' } | { kind: 'ambiguo' } {
+  const t = text.trim().toLowerCase().replace(/[.!?,;]+$/, '');
+  // Cancela
+  if (/^(cancela|cancelar|esquece|deixa|para|nenhum|nenhuma|n[ãa]o quero|n[ãa]o)$/.test(t)) return { kind: 'cancela' };
+  // Novo cliente
+  if (/\b(novo|nov[ao]\s+cliente|cadastra|cadastrar|criar|cria|cadastre)\b/.test(t)) return { kind: 'novo' };
+  // Número direto (1, 2, 3 ...)
+  const numMatch = t.match(/^(\d{1,3})/);
+  if (numMatch) {
+    const n = parseInt(numMatch[1]);
+    if (n >= 1 && n <= totalOpcoes) return { kind: 'numero', idx: n - 1 };
+  }
+  // Ordinais em texto
+  const ordinais: Record<string, number> = {
+    'primeiro': 0, 'primeira': 0, 'primeiro um': 0, 'o primeiro': 0,
+    'segundo': 1, 'segunda': 1, 'o segundo': 1,
+    'terceiro': 2, 'terceira': 2, 'o terceiro': 2,
+    'quarto': 3, 'quarta': 3,
+    'quinto': 4, 'quinta': 4,
+  };
+  for (const [k, v] of Object.entries(ordinais)) {
+    if (t.includes(k) && v < totalOpcoes) return { kind: 'numero', idx: v };
+  }
+  return { kind: 'ambiguo' };
+}
+
+function formatListaClientes(candidatos: ClienteMatch[]): string {
+  return candidatos
+    .map((c, i) => `${i + 1}. ${formatClienteResumo(c)}`)
+    .join('\n');
 }
 
 // --- Normaliza "123" / "ORC-7" / "orc 45" → "ORC-000123" ---
@@ -776,6 +995,287 @@ async function searchProducts(terms: string[]): Promise<{ term: string; products
       .sort((a, b) => (b.sml - a.sml) || (a.id - b.id))
       .slice(0, MAX_PER_TERM),
   }));
+}
+
+// --- Clientes: helpers de busca ---
+function onlyDigits(s: string | null | undefined): string {
+  return (s || '').replace(/\D/g, '');
+}
+
+// Detecta um possível CPF/CNPJ no termo (11 ou 14 dígitos, ou prefixo razoável)
+function extractDocDigits(term: string): string | null {
+  const d = onlyDigits(term);
+  if (d.length >= 11) return d;
+  return null;
+}
+
+type ClienteMatch = {
+  id: string;
+  nome: string;
+  fantasia: string | null;
+  cpf_cnpj: string | null;
+  cidade: string | null;
+  uf: string | null;
+  fone: string | null;
+  celular: string | null;
+  externo_id: string | null;
+  score: number;
+  match_type: 'exato' | 'documento' | 'externo_id' | 'telefone' | 'fuzzy';
+};
+
+async function searchClientes(query: string, limit = 8): Promise<ClienteMatch[]> {
+  const q = (query || '').trim();
+  if (!q) return [];
+
+  // 1) match exato por externo_id (números longos do Tiny/Bling)
+  const allDigits = onlyDigits(q);
+  if (allDigits.length >= 8) {
+    const { rows } = await pool.query(
+      `SELECT id, nome, fantasia, cpf_cnpj, cidade, uf, fone, celular, externo_id
+       FROM clientes WHERE externo_id = $1 LIMIT 1`,
+      [allDigits]
+    );
+    if (rows.length > 0) {
+      return rows.map(r => ({ ...r, score: 1, match_type: 'externo_id' as const }));
+    }
+  }
+
+  // 2) match exato por CPF/CNPJ (qualquer formatação)
+  const docDigits = extractDocDigits(q);
+  if (docDigits) {
+    const { rows } = await pool.query(
+      `SELECT id, nome, fantasia, cpf_cnpj, cidade, uf, fone, celular, externo_id
+       FROM clientes WHERE regexp_replace(coalesce(cpf_cnpj, ''), '\\D', '', 'g') = $1
+       LIMIT 5`,
+      [docDigits]
+    );
+    if (rows.length > 0) {
+      return rows.map(r => ({ ...r, score: 1, match_type: 'documento' as const }));
+    }
+  }
+
+  // 3) match por telefone (último 8+ dígitos)
+  if (allDigits.length >= 8 && allDigits.length < 14) {
+    const { rows } = await pool.query(
+      `SELECT id, nome, fantasia, cpf_cnpj, cidade, uf, fone, celular, externo_id
+       FROM clientes
+       WHERE regexp_replace(coalesce(fone, '') || coalesce(celular, ''), '\\D', '', 'g') LIKE '%' || $1 || '%'
+       LIMIT 5`,
+      [allDigits]
+    );
+    if (rows.length > 0) {
+      return rows.map(r => ({ ...r, score: 0.95, match_type: 'telefone' as const }));
+    }
+  }
+
+  // 4) Fuzzy por nome / fantasia (trigram + ILIKE)
+  const { rows } = await pool.query(
+    `WITH base AS (
+       SELECT id, nome, fantasia, cpf_cnpj, cidade, uf, fone, celular, externo_id,
+              GREATEST(
+                similarity(unaccent(lower(nome)), unaccent(lower($1))),
+                similarity(unaccent(lower(coalesce(fantasia, ''))), unaccent(lower($1))),
+                CASE WHEN unaccent(lower(nome)) ILIKE '%' || unaccent(lower($1)) || '%' THEN 0.55 ELSE 0 END,
+                CASE WHEN unaccent(lower(coalesce(fantasia, ''))) ILIKE '%' || unaccent(lower($1)) || '%' THEN 0.55 ELSE 0 END
+              ) AS sml
+       FROM clientes
+       WHERE ativo = true
+     )
+     SELECT * FROM base
+     WHERE sml > 0.18
+     ORDER BY sml DESC, nome ASC
+     LIMIT $2`,
+    [q, limit]
+  );
+
+  // Se nada com fuzzy clássico, tenta keyword AND nas palavras
+  if (rows.length === 0) {
+    const tokens = q.toLowerCase().split(/\s+/).filter(t => t.length >= 2);
+    if (tokens.length > 0) {
+      const conds = tokens
+        .map((_, i) => `unaccent(lower(nome || ' ' || coalesce(fantasia, ''))) ILIKE '%' || unaccent(lower($${i + 1})) || '%'`)
+        .join(' AND ');
+      const { rows: kw } = await pool.query(
+        `SELECT id, nome, fantasia, cpf_cnpj, cidade, uf, fone, celular, externo_id, 0.4 AS sml
+         FROM clientes
+         WHERE ativo = true AND (${conds})
+         ORDER BY nome ASC LIMIT $${tokens.length + 1}`,
+        [...tokens, limit]
+      );
+      return kw.map(r => ({ ...r, score: Number(r.sml), match_type: 'fuzzy' as const }));
+    }
+  }
+
+  return rows.map(r => ({ ...r, score: Number(r.sml), match_type: 'fuzzy' as const }));
+}
+
+function formatClienteResumo(c: ClienteMatch | any): string {
+  const partes: string[] = [];
+  if (c.fantasia && c.fantasia.toLowerCase() !== String(c.nome).toLowerCase()) partes.push(c.fantasia);
+  if (c.cpf_cnpj) partes.push(`CPF/CNPJ: ${c.cpf_cnpj}`);
+  if (c.cidade) partes.push(`${c.cidade}${c.uf ? '/' + c.uf : ''}`);
+  const sufixo = partes.length > 0 ? ` — ${partes.join(' — ')}` : '';
+  return `${c.nome}${sufixo}`;
+}
+
+// --- Persistência: cria/atualiza orçamento e devolve mensagem WhatsApp ---
+async function gravarOrcamento(opts: {
+  fnName: 'finalizar_orcamento' | 'alterar_orcamento';
+  vendedorId: string;
+  currentSessionId: string;
+  senderNumber: string;
+  itens: any[];
+  total: number;
+  clienteId: string | null;
+  clienteNome: string;
+  numeroAlvo?: string | null;
+}): Promise<{ numero: string | null; replyText: string }> {
+  const { fnName, vendedorId, currentSessionId, senderNumber, itens, total, clienteId, clienteNome } = opts;
+
+  if (fnName === 'alterar_orcamento') {
+    const numeroAlvo = opts.numeroAlvo;
+    if (!numeroAlvo) {
+      const reply = 'Não identifiquei qual orçamento alterar. Me passa o número (ex: ORC-000123).';
+      await sendWhatsAppMessage(senderNumber, reply);
+      await pool.query(
+        `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+        [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+      );
+      return { numero: null, replyText: reply };
+    }
+    const { rowCount } = await pool.query(
+      `UPDATE orcamentos
+       SET itens = $1::jsonb, total = $2, cliente_nome = $3, cliente_id = $4, atualizado_em = NOW()
+       WHERE numero = $5 AND vendedor_id = $6 AND status = 'aberto'`,
+      [JSON.stringify(itens), total, clienteNome, clienteId, numeroAlvo, vendedorId]
+    );
+    if ((rowCount ?? 0) === 0) {
+      const reply = `Não consegui alterar o ${numeroAlvo} (já fechado ou cancelado).`;
+      await sendWhatsAppMessage(senderNumber, reply);
+      await pool.query(
+        `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+        [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+      );
+      return { numero: numeroAlvo, replyText: reply };
+    }
+    const replyText = formatarTextoOrcamento({
+      numero: numeroAlvo,
+      clienteNome,
+      itens,
+      total,
+      cabecalho: `✏️ *ORÇAMENTO ${numeroAlvo} ATUALIZADO*`,
+      rodape: `Orçamento ${numeroAlvo} atualizado e segue em aberto.`,
+    });
+    await sendWhatsAppMessage(senderNumber, replyText);
+    await pool.query(
+      `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+      [currentSessionId, vendedorId, 'assistant', replyText, 'texto']
+    );
+    console.log('[alterar_orcamento]', { numero: numeroAlvo, total, itens: itens.length, cliente_id: clienteId });
+    return { numero: numeroAlvo, replyText };
+  }
+
+  // Finalização: cria novo orçamento
+  const { rows: seqRows } = await pool.query(`SELECT nextval('orcamento_numero_seq') AS seq`);
+  const seqNum = Number(seqRows[0].seq);
+  const numero = `ORC-${String(seqNum).padStart(6, '0')}`;
+
+  await pool.query(
+    `INSERT INTO orcamentos (numero, sessao_id, vendedor_id, cliente_id, cliente_nome, itens, total)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+    [numero, currentSessionId, vendedorId, clienteId, clienteNome, JSON.stringify(itens), total]
+  );
+
+  await pool.query(
+    `UPDATE sessoes SET status = 'orcamento_gerado', encerrada_em = NOW() WHERE id = $1`,
+    [currentSessionId]
+  );
+
+  const replyText = formatarTextoOrcamento({ numero, clienteNome, itens, total });
+
+  await sendWhatsAppMessage(senderNumber, replyText);
+  await pool.query(
+    `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+    [currentSessionId, vendedorId, 'assistant', replyText, 'texto']
+  );
+  console.log('[orcamento]', { numero, total, itens: itens.length, cliente_id: clienteId });
+  return { numero, replyText };
+}
+
+// --- Resolve cliente a partir de uma query livre. Decide se grava direto,
+// pede pro vendedor escolher, ou oferece cadastrar novo. Sempre responde algo.
+async function resolverClienteEGravar(opts: {
+  fnName: 'finalizar_orcamento' | 'alterar_orcamento';
+  vendedorId: string;
+  currentSessionId: string;
+  senderNumber: string;
+  itens: any[];
+  total: number;
+  clienteQuery: string;
+  numeroAlvo?: string | null;
+}): Promise<void> {
+  const { fnName, vendedorId, currentSessionId, senderNumber, itens, total, clienteQuery, numeroAlvo } = opts;
+
+  const matches = await searchClientes(clienteQuery, 6);
+
+  // Caso 1: nenhum match → oferece cadastrar novo
+  if (matches.length === 0) {
+    await pool.query(
+      `UPDATE sessoes SET acao_pendente = $1::jsonb WHERE id = $2`,
+      [JSON.stringify({
+        tipo: 'selecionar_cliente',
+        fn: fnName,
+        candidatos: [],
+        nome_sugerido: clienteQuery,
+        itens, total,
+        numero_alvo: numeroAlvo || null,
+      }), currentSessionId]
+    );
+    const reply = `Não achei nenhum cliente parecido com "${clienteQuery}" na base.\n\nQuer que eu cadastre *${clienteQuery}* como novo cliente e siga com o orçamento? Responda *novo* para cadastrar ou *cancela*.`;
+    await sendWhatsAppMessage(senderNumber, reply);
+    await pool.query(
+      `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+      [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+    );
+    return;
+  }
+
+  // Caso 2: match único forte (documento, externo_id, telefone, ou fuzzy >= 0.7)
+  const isMatchForte = (m: ClienteMatch) =>
+    m.match_type === 'documento' || m.match_type === 'externo_id' || m.match_type === 'telefone' ||
+    (m.match_type === 'fuzzy' && m.score >= 0.7);
+
+  if (matches.length === 1 && isMatchForte(matches[0])) {
+    const c = matches[0];
+    await pool.query(`UPDATE sessoes SET acao_pendente = NULL WHERE id = $1`, [currentSessionId]);
+    await gravarOrcamento({
+      fnName, vendedorId, currentSessionId, senderNumber,
+      itens, total,
+      clienteId: c.id,
+      clienteNome: c.nome,
+      numeroAlvo: numeroAlvo || null,
+    });
+    return;
+  }
+
+  // Caso 3: múltiplos matches OU match fraco → pergunta
+  await pool.query(
+    `UPDATE sessoes SET acao_pendente = $1::jsonb WHERE id = $2`,
+    [JSON.stringify({
+      tipo: 'selecionar_cliente',
+      fn: fnName,
+      candidatos: matches,
+      nome_sugerido: clienteQuery,
+      itens, total,
+      numero_alvo: numeroAlvo || null,
+    }), currentSessionId]
+  );
+  const reply = `Achei ${matches.length} cliente${matches.length > 1 ? 's' : ''} parecido${matches.length > 1 ? 's' : ''} com "${clienteQuery}":\n\n${formatListaClientes(matches)}\n\nResponda com o *número* do cliente certo, *novo* pra cadastrar um novo, ou *cancela*.`;
+  await sendWhatsAppMessage(senderNumber, reply);
+  await pool.query(
+    `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+    [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+  );
 }
 
 // 9. Send message via Evolution API
@@ -987,12 +1487,154 @@ app.post('/api/webhook/evolution', async (req, res) => {
       return;
     }
 
-    // --- Confirmação pendente (fechar venda / cancelar) ---
+    // --- Ações pendentes (confirmações de venda/cancel + seleção de cliente + edição) ---
     const { rows: pendRows } = await pool.query(
       `SELECT acao_pendente FROM sessoes WHERE id = $1`,
       [currentSessionId]
     );
-    const acaoPendente: { tipo?: string; numero?: string } | null = pendRows[0]?.acao_pendente || null;
+    const acaoPendente: any = pendRows[0]?.acao_pendente || null;
+
+    // 1. Seleção de cliente para finalizar/alterar orçamento
+    if (acaoPendente && acaoPendente.tipo === 'selecionar_cliente') {
+      const candidatos: ClienteMatch[] = Array.isArray(acaoPendente.candidatos) ? acaoPendente.candidatos : [];
+      const escolha = parseEscolha(incomingText, candidatos.length);
+      await pool.query(
+        `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+        [currentSessionId, vendedorId, 'user', incomingText, tipoMidia]
+      );
+
+      if (escolha.kind === 'cancela') {
+        await pool.query(`UPDATE sessoes SET acao_pendente = NULL WHERE id = $1`, [currentSessionId]);
+        const reply = 'Ok, cancelei a finalização. Os itens estão aí — me passe o cliente certo quando quiser fechar.';
+        await sendWhatsAppMessage(senderNumber, reply);
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+        );
+        return;
+      }
+
+      if (escolha.kind === 'novo') {
+        const nomeNovo = String(acaoPendente.nome_sugerido || '').trim();
+        if (!nomeNovo) {
+          const reply = 'Pra cadastrar o novo cliente, me manda o nome dele.';
+          await sendWhatsAppMessage(senderNumber, reply);
+          await pool.query(
+            `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+            [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+          );
+          return;
+        }
+        const { rows: novoRows } = await pool.query(
+          `INSERT INTO clientes (nome) VALUES ($1) RETURNING id, nome`,
+          [nomeNovo]
+        );
+        const novo = novoRows[0];
+        await pool.query(`UPDATE sessoes SET acao_pendente = NULL WHERE id = $1`, [currentSessionId]);
+        await gravarOrcamento({
+          fnName: acaoPendente.fn,
+          vendedorId, currentSessionId, senderNumber,
+          itens: acaoPendente.itens || [],
+          total: Number(acaoPendente.total || 0),
+          clienteId: novo.id,
+          clienteNome: novo.nome,
+          numeroAlvo: acaoPendente.numero_alvo || null,
+        });
+        return;
+      }
+
+      if (escolha.kind === 'numero') {
+        const c = candidatos[escolha.idx];
+        if (!c) {
+          const reply = `Opção inválida. Escolha um número de 1 a ${candidatos.length}, *novo* ou *cancela*.`;
+          await sendWhatsAppMessage(senderNumber, reply);
+          await pool.query(
+            `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+            [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+          );
+          return;
+        }
+        await pool.query(`UPDATE sessoes SET acao_pendente = NULL WHERE id = $1`, [currentSessionId]);
+        await gravarOrcamento({
+          fnName: acaoPendente.fn,
+          vendedorId, currentSessionId, senderNumber,
+          itens: acaoPendente.itens || [],
+          total: Number(acaoPendente.total || 0),
+          clienteId: c.id,
+          clienteNome: c.nome,
+          numeroAlvo: acaoPendente.numero_alvo || null,
+        });
+        return;
+      }
+
+      // Ambíguo — repete a pergunta
+      const reply = candidatos.length === 0
+        ? `Não entendi. Responda *novo* para cadastrar "${acaoPendente.nome_sugerido}" como novo cliente, ou *cancela*.`
+        : `Não entendi sua escolha. Responda com o *número* (1 a ${candidatos.length}), *novo* pra cadastrar um novo cliente, ou *cancela*.`;
+      await sendWhatsAppMessage(senderNumber, reply);
+      await pool.query(
+        `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+        [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+      );
+      return;
+    }
+
+    // 2. Seleção de cliente para EDITAR
+    if (acaoPendente && acaoPendente.tipo === 'selecionar_cliente_edicao') {
+      const candidatos: ClienteMatch[] = Array.isArray(acaoPendente.candidatos) ? acaoPendente.candidatos : [];
+      const escolha = parseEscolha(incomingText, candidatos.length);
+      await pool.query(
+        `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+        [currentSessionId, vendedorId, 'user', incomingText, tipoMidia]
+      );
+      if (escolha.kind === 'cancela' || escolha.kind === 'novo') {
+        await pool.query(`UPDATE sessoes SET acao_pendente = NULL WHERE id = $1`, [currentSessionId]);
+        const reply = 'Ok, cancelei a edição.';
+        await sendWhatsAppMessage(senderNumber, reply);
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+        );
+        return;
+      }
+      if (escolha.kind === 'numero') {
+        const c = candidatos[escolha.idx];
+        if (!c) {
+          const reply = `Opção inválida. Escolha um número de 1 a ${candidatos.length} ou *cancela*.`;
+          await sendWhatsAppMessage(senderNumber, reply);
+          return;
+        }
+        const campos = acaoPendente.campos || {};
+        const fields = Object.keys(campos).filter(k => campos[k] !== undefined && campos[k] !== null && campos[k] !== '');
+        if (fields.length === 0) {
+          await pool.query(`UPDATE sessoes SET acao_pendente = NULL WHERE id = $1`, [currentSessionId]);
+          const reply = 'Não tinha campo para alterar. Me diga o que mudar.';
+          await sendWhatsAppMessage(senderNumber, reply);
+          return;
+        }
+        const sets = fields.map((f, i) => `${f} = $${i + 1}`).join(', ');
+        const values = fields.map(f => campos[f]);
+        values.push(c.id);
+        await pool.query(
+          `UPDATE clientes SET ${sets}, atualizado_em = NOW() WHERE id = $${values.length}`,
+          values
+        );
+        await pool.query(`UPDATE sessoes SET acao_pendente = NULL WHERE id = $1`, [currentSessionId]);
+        const detalhes = fields.map(f => `${f}: ${campos[f]}`).join('\n');
+        const reply = `✏️ Cliente *${c.nome}* atualizado:\n\n${detalhes}`;
+        await sendWhatsAppMessage(senderNumber, reply);
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+        );
+        return;
+      }
+      const reply = `Não entendi. Responda com o *número* (1 a ${candidatos.length}) do cliente que você quer alterar, ou *cancela*.`;
+      await sendWhatsAppMessage(senderNumber, reply);
+      return;
+    }
+
+    // 3. Confirmação clássica de fechar venda / cancelar orçamento
     if (acaoPendente && acaoPendente.tipo && acaoPendente.numero) {
       const conf = parseConfirmacao(incomingText);
       if (conf === 'sim' || conf === 'nao') {
@@ -1415,6 +2057,11 @@ Quando o vendedor confirmar de forma clara TODOS os itens e quantidades (ex: "ok
 NOME DO CLIENTE — OBRIGATÓRIO:
 Todo orçamento PRECISA ter o nome do cliente. Se o vendedor ainda não informou (não apareceu no histórico da sessão), PERGUNTE antes de finalizar: "Para qual cliente é esse orçamento?". NÃO invente nome. NÃO chame "finalizar_orcamento" sem o nome do cliente em mãos. Só chame a função quando tiver: itens confirmados + nome do cliente.
 
+CLIENTES — IMPORTANTE:
+- Os clientes ficam cadastrados em uma base. O sistema faz a busca automática a partir do nome/CPF/ID que você passar no campo cliente_nome — pode usar nome curto ("Maria", "Daniel"), nome completo, fantasia, CPF/CNPJ ou ID externo. O sistema decide entre: vincular ao cliente certo, listar opções pro vendedor escolher, ou oferecer cadastrar um novo cliente. NÃO se preocupe com a base, só passe o melhor identificador que o vendedor te deu.
+- Se o vendedor pedir explicitamente para EDITAR dados de um cliente já existente (telefone, endereço, e-mail, CPF, etc.), chame a função "editar_cliente" passando uma query de busca (nome/CPF/ID) e os campos a alterar. Antes de aplicar, o sistema confirma com o vendedor se houver ambiguidade.
+- Se o vendedor pedir para CADASTRAR um cliente novo SEM estar fazendo um orçamento (ex: "cadastra o cliente Pedro Almeida, CPF 123..., telefone 86..."), chame "cadastrar_cliente" com o que ele passou. Nome é obrigatório.
+
 ${alteracaoBlock}
 AMBIGUIDADE — quando perguntar:
 - Se o vendedor mandar uma mensagem que pode significar "começar um pedido novo" mas você está no meio de um orçamento (ex: ele cita um produto totalmente diferente do contexto, ou diz "outro cliente", "outro pedido"), pergunte UMA vez: "Esse é um novo orçamento ou faz parte do atual?". Não pergunte isso em mensagens normais de adição de itens.
@@ -1467,6 +2114,71 @@ AMBIGUIDADE — quando perguntar:
         {
           type: 'function',
           function: {
+            name: 'cadastrar_cliente',
+            description: 'Cadastra um cliente novo na base. Use APENAS quando o vendedor pedir explicitamente para cadastrar um cliente (fora do fluxo de orçamento). Nome é obrigatório. Outros campos preencha somente se o vendedor passou.',
+            parameters: {
+              type: 'object',
+              required: ['nome'],
+              properties: {
+                nome: { type: 'string', description: 'Nome do cliente. Obrigatório.' },
+                fantasia: { type: 'string' },
+                tipo_pessoa: { type: 'string', enum: ['Pessoa Física', 'Pessoa Jurídica'] },
+                cpf_cnpj: { type: 'string' },
+                fone: { type: 'string' },
+                celular: { type: 'string' },
+                email: { type: 'string' },
+                endereco: { type: 'string' },
+                numero: { type: 'string' },
+                complemento: { type: 'string' },
+                bairro: { type: 'string' },
+                cidade: { type: 'string' },
+                uf: { type: 'string' },
+                cep: { type: 'string' },
+                tipo_contato: { type: 'string' },
+              },
+            },
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'editar_cliente',
+            description: 'Atualiza dados de um cliente já cadastrado. O sistema busca o cliente pela query (nome, fantasia, CPF/CNPJ ou ID). Se houver mais de um match, o sistema pede pro vendedor escolher antes de aplicar.',
+            parameters: {
+              type: 'object',
+              required: ['query', 'campos'],
+              properties: {
+                query: { type: 'string', description: 'Identificador do cliente passado pelo vendedor — pode ser nome, fantasia, CPF/CNPJ ou ID externo.' },
+                campos: {
+                  type: 'object',
+                  description: 'Mapa de campos a atualizar. Use apenas os campos que o vendedor pediu pra mudar.',
+                  properties: {
+                    nome: { type: 'string' },
+                    fantasia: { type: 'string' },
+                    tipo_pessoa: { type: 'string' },
+                    cpf_cnpj: { type: 'string' },
+                    fone: { type: 'string' },
+                    celular: { type: 'string' },
+                    email: { type: 'string' },
+                    email_nfe: { type: 'string' },
+                    endereco: { type: 'string' },
+                    numero: { type: 'string' },
+                    complemento: { type: 'string' },
+                    bairro: { type: 'string' },
+                    cidade: { type: 'string' },
+                    uf: { type: 'string' },
+                    cep: { type: 'string' },
+                    tipo_contato: { type: 'string' },
+                    observacoes: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          type: 'function',
+          function: {
             name: 'finalizar_orcamento',
             description: 'Finaliza o orçamento atual. Chamar SOMENTE depois que o vendedor confirmar de forma clara todos os itens e quantidades E tiver informado o nome do cliente.',
             parameters: {
@@ -1501,13 +2213,14 @@ AMBIGUIDADE — quando perguntar:
     });
 
     const choice = finalResponse.choices[0].message;
+    const supportedFns = new Set(['finalizar_orcamento', 'alterar_orcamento', 'cadastrar_cliente', 'editar_cliente']);
     const toolCall = choice.tool_calls?.find(
-      (tc: any) => tc?.type === 'function' &&
-        (tc?.function?.name === 'finalizar_orcamento' || tc?.function?.name === 'alterar_orcamento')
+      (tc: any) => tc?.type === 'function' && supportedFns.has(tc?.function?.name)
     ) as any;
 
     if (toolCall) {
-      const fnName = toolCall.function?.name as 'finalizar_orcamento' | 'alterar_orcamento';
+      const fnName = toolCall.function?.name as
+        'finalizar_orcamento' | 'alterar_orcamento' | 'cadastrar_cliente' | 'editar_cliente';
       let args: any = {};
       try {
         args = JSON.parse(toolCall.function?.arguments || '{}');
@@ -1515,14 +2228,132 @@ AMBIGUIDADE — quando perguntar:
         console.error(`[${fnName}] JSON parse falhou:`, toolCall.function?.arguments);
       }
 
+      // --- Cadastrar cliente (fora do fluxo de orçamento) ---
+      if (fnName === 'cadastrar_cliente') {
+        const nome = typeof args.nome === 'string' ? args.nome.trim() : '';
+        if (!nome) {
+          const reply = 'Pra cadastrar o cliente preciso pelo menos do nome.';
+          await sendWhatsAppMessage(senderNumber, reply);
+          await pool.query(
+            `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+            [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+          );
+          return;
+        }
+        const allowedFields = [
+          'nome','fantasia','tipo_pessoa','cpf_cnpj','fone','celular','email',
+          'endereco','numero','complemento','bairro','cidade','uf','cep','tipo_contato',
+        ];
+        const cols: string[] = [];
+        const placeholders: string[] = [];
+        const values: any[] = [];
+        for (const f of allowedFields) {
+          if (args[f] !== undefined && args[f] !== null && String(args[f]).trim() !== '') {
+            cols.push(f);
+            placeholders.push(`$${values.length + 1}`);
+            values.push(String(args[f]).trim());
+          }
+        }
+        if (!cols.includes('nome')) {
+          cols.unshift('nome');
+          placeholders.unshift(`$${values.length + 1}`);
+          values.push(nome);
+        }
+        const { rows: insRows } = await pool.query(
+          `INSERT INTO clientes (${cols.join(', ')}) VALUES (${placeholders.join(', ')}) RETURNING id, nome, cpf_cnpj, cidade, uf`,
+          values
+        );
+        const novo = insRows[0];
+        const reply = `✅ Cliente cadastrado:\n\n*${novo.nome}*${novo.cpf_cnpj ? `\nCPF/CNPJ: ${novo.cpf_cnpj}` : ''}${novo.cidade ? `\n${novo.cidade}${novo.uf ? '/' + novo.uf : ''}` : ''}`;
+        await sendWhatsAppMessage(senderNumber, reply);
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+        );
+        return;
+      }
+
+      // --- Editar cliente ---
+      if (fnName === 'editar_cliente') {
+        const query = typeof args.query === 'string' ? args.query.trim() : '';
+        const campos = (args.campos && typeof args.campos === 'object') ? args.campos : {};
+        const camposLimpos: Record<string, string> = {};
+        for (const [k, v] of Object.entries(campos)) {
+          if (typeof v === 'string' && v.trim() !== '') camposLimpos[k] = v.trim();
+        }
+        if (!query || Object.keys(camposLimpos).length === 0) {
+          const reply = 'Pra editar um cliente preciso de: identificador (nome/CPF/ID) e os campos a alterar.';
+          await sendWhatsAppMessage(senderNumber, reply);
+          await pool.query(
+            `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+            [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+          );
+          return;
+        }
+        const matches = await searchClientes(query, 5);
+        if (matches.length === 0) {
+          const reply = `Não achei nenhum cliente parecido com "${query}". Confira o nome/CPF.`;
+          await sendWhatsAppMessage(senderNumber, reply);
+          await pool.query(
+            `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+            [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+          );
+          return;
+        }
+        const isMatchForte = (m: ClienteMatch) =>
+          m.match_type === 'documento' || m.match_type === 'externo_id' ||
+          (m.match_type === 'fuzzy' && m.score >= 0.7);
+
+        if (matches.length === 1 && isMatchForte(matches[0])) {
+          const c = matches[0];
+          const fields = Object.keys(camposLimpos);
+          const sets = fields.map((f, i) => `${f} = $${i + 1}`).join(', ');
+          const values = fields.map(f => camposLimpos[f]);
+          values.push(c.id);
+          await pool.query(
+            `UPDATE clientes SET ${sets}, atualizado_em = NOW() WHERE id = $${values.length}`,
+            values
+          );
+          const detalhes = fields.map(f => `${f}: ${camposLimpos[f]}`).join('\n');
+          const reply = `✏️ Cliente *${c.nome}* atualizado:\n\n${detalhes}`;
+          await sendWhatsAppMessage(senderNumber, reply);
+          await pool.query(
+            `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+            [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+          );
+          return;
+        }
+        // múltiplos / fuzzy fraco — pergunta
+        await pool.query(
+          `UPDATE sessoes SET acao_pendente = $1::jsonb WHERE id = $2`,
+          [JSON.stringify({
+            tipo: 'selecionar_cliente_edicao',
+            candidatos: matches,
+            campos: camposLimpos,
+          }), currentSessionId]
+        );
+        const reply = `Achei ${matches.length} cliente${matches.length > 1 ? 's' : ''} para "${query}":\n\n${formatListaClientes(matches)}\n\nQual deles você quer alterar? Responda com o *número* ou *cancela*.`;
+        await sendWhatsAppMessage(senderNumber, reply);
+        await pool.query(
+          `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
+          [currentSessionId, vendedorId, 'assistant', reply, 'texto']
+        );
+        return;
+      }
+
+      // --- Finalizar / alterar orçamento ---
       const itens = Array.isArray(args.itens) ? args.itens : [];
       const total = Number(args.total ?? 0);
       const clienteNome = typeof args.cliente_nome === 'string' && args.cliente_nome.trim().length > 0
         ? args.cliente_nome.trim()
         : null;
 
-      // Cliente_nome é obrigatório. Se o agente teimou e mandou sem, pergunta em vez de criar/alterar.
-      if (itens.length > 0 && total > 0 && !clienteNome) {
+      if (itens.length === 0 || !(total > 0)) {
+        console.error(`[${fnName}] args inválidos, ignorando:`, args);
+        return;
+      }
+
+      if (!clienteNome) {
         const askCliente = 'Antes de fechar, preciso do nome do cliente para esse orçamento. Para quem é? 👤';
         await sendWhatsAppMessage(senderNumber, askCliente);
         await pool.query(
@@ -1532,71 +2363,16 @@ AMBIGUIDADE — quando perguntar:
         return;
       }
 
-      if (itens.length > 0 && total > 0 && clienteNome) {
-        if (fnName === 'alterar_orcamento') {
-          const numeroAlvo = orcamentoEmAlteracao?.numero
-            || normalizarNumeroOrcamento(String(args.numero || ''));
-          if (!numeroAlvo) {
-            console.error('[alterar_orcamento] sem número alvo, ignorando');
-            return;
-          }
-          const { rowCount } = await pool.query(
-            `UPDATE orcamentos
-             SET itens = $1::jsonb, total = $2, cliente_nome = $3, atualizado_em = NOW()
-             WHERE numero = $4 AND vendedor_id = $5 AND status = 'aberto'`,
-            [JSON.stringify(itens), total, clienteNome, numeroAlvo, vendedorId]
-          );
-          if ((rowCount ?? 0) === 0) {
-            const reply = `Não consegui alterar o ${numeroAlvo} (já fechado ou cancelado).`;
-            await sendWhatsAppMessage(senderNumber, reply);
-            await pool.query(
-              `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
-              [currentSessionId, vendedorId, 'assistant', reply, 'texto']
-            );
-            return;
-          }
-          const replyText = formatarTextoOrcamento({
-            numero: numeroAlvo,
-            clienteNome,
-            itens,
-            total,
-            cabecalho: `✏️ *ORÇAMENTO ${numeroAlvo} ATUALIZADO*`,
-            rodape: `Orçamento ${numeroAlvo} atualizado e segue em aberto.`,
-          });
-          await sendWhatsAppMessage(senderNumber, replyText);
-          await pool.query(
-            `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
-            [currentSessionId, vendedorId, 'assistant', replyText, 'texto']
-          );
-          console.log('[alterar_orcamento]', { numero: numeroAlvo, total, itens: itens.length });
-        } else {
-          const { rows: seqRows } = await pool.query(`SELECT nextval('orcamento_numero_seq') AS seq`);
-          const seqNum = Number(seqRows[0].seq);
-          const numero = `ORC-${String(seqNum).padStart(6, '0')}`;
+      const numeroAlvo = fnName === 'alterar_orcamento'
+        ? (orcamentoEmAlteracao?.numero || normalizarNumeroOrcamento(String(args.numero || '')))
+        : null;
 
-          await pool.query(
-            `INSERT INTO orcamentos (numero, sessao_id, vendedor_id, cliente_nome, itens, total)
-             VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
-            [numero, currentSessionId, vendedorId, clienteNome, JSON.stringify(itens), total]
-          );
-
-          await pool.query(
-            `UPDATE sessoes SET status = 'orcamento_gerado', encerrada_em = NOW() WHERE id = $1`,
-            [currentSessionId]
-          );
-
-          const replyText = formatarTextoOrcamento({ numero, clienteNome, itens, total });
-
-          await sendWhatsAppMessage(senderNumber, replyText);
-          await pool.query(
-            `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia) VALUES ($1, $2, $3, $4, $5)`,
-            [currentSessionId, vendedorId, 'assistant', replyText, 'texto']
-          );
-          console.log('[orcamento]', { numero, total, itens: itens.length });
-        }
-      } else {
-        console.error(`[${fnName}] args inválidos, ignorando:`, args);
-      }
+      await resolverClienteEGravar({
+        fnName, vendedorId, currentSessionId: currentSessionId!, senderNumber,
+        itens, total,
+        clienteQuery: clienteNome,
+        numeroAlvo,
+      });
     } else {
       const replyText = choice.content;
       if (replyText) {

@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { PackageOpen, MessageSquare, Settings, Upload, History, FileText, ShoppingBag } from 'lucide-react';
+import { PackageOpen, MessageSquare, Settings, Upload, History, FileText, ShoppingBag, Users } from 'lucide-react';
 import { cn } from './lib/utils';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas'>('import');
+  const [activeTab, setActiveTab] = useState<'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas' | 'clientes'>('import');
 
   return (
     <div className="flex flex-col h-screen bg-[#020617] text-slate-200 font-sans overflow-hidden relative">
@@ -32,6 +32,7 @@ export default function App() {
             <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold px-2">Navegação</p>
             <SidebarItem icon={<Upload size={16} />} label="Importação" active={activeTab === 'import'} onClick={() => setActiveTab('import')} />
             <SidebarItem icon={<PackageOpen size={16} />} label="Produtos" active={activeTab === 'products'} onClick={() => setActiveTab('products')} />
+            <SidebarItem icon={<Users size={16} />} label="Clientes" active={activeTab === 'clientes'} onClick={() => setActiveTab('clientes')} />
             <SidebarItem icon={<History size={16} />} label="Histórico" active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
             <SidebarItem icon={<FileText size={16} />} label="Orçamentos" active={activeTab === 'orcamentos'} onClick={() => setActiveTab('orcamentos')} />
             <SidebarItem icon={<ShoppingBag size={16} />} label="Vendas" active={activeTab === 'vendas'} onClick={() => setActiveTab('vendas')} />
@@ -48,6 +49,7 @@ export default function App() {
           <div className="max-w-5xl mx-auto w-full">
             {activeTab === 'import' && <ImportTab />}
             {activeTab === 'products' && <ProductsTab />}
+            {activeTab === 'clientes' && <ClientesTab />}
             {activeTab === 'history' && <HistoryTab />}
             {activeTab === 'orcamentos' && <OrcamentosTab mode="orcamentos" />}
             {activeTab === 'vendas' && <OrcamentosTab mode="vendas" />}
@@ -535,6 +537,223 @@ function OrcamentosTab({ mode = 'orcamentos' }: { mode?: 'orcamentos' | 'vendas'
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ClientesTab() {
+  const empty = {
+    nome: '', fantasia: '', tipo_pessoa: '', cpf_cnpj: '',
+    fone: '', celular: '', email: '', email_nfe: '',
+    endereco: '', numero: '', complemento: '', bairro: '',
+    cep: '', cidade: '', uf: '',
+    tipo_contato: '', vendedor: '', observacoes: '',
+  };
+  const [list, setList] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState('');
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [form, setForm] = useState<any>(empty);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const load = async (query = '') => {
+    setLoading(true);
+    try {
+      const qs = new URLSearchParams();
+      if (query) qs.set('q', query);
+      qs.set('limit', '200');
+      const res = await fetch(`/api/clientes?${qs.toString()}`);
+      setList(await res.json());
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const openCreate = () => { setEditing(null); setForm(empty); setShowForm(true); setMessage(''); };
+  const openEdit = async (id: string) => {
+    setMessage('');
+    const res = await fetch(`/api/clientes/${id}`);
+    const data = await res.json();
+    setEditing(data);
+    setForm({ ...empty, ...data });
+    setShowForm(true);
+  };
+
+  const save = async () => {
+    if (!form.nome || !String(form.nome).trim()) { setMessage('Nome é obrigatório.'); return; }
+    setSaving(true);
+    setMessage('');
+    try {
+      const url = editing ? `/api/clientes/${editing.id}` : '/api/clientes';
+      const method = editing ? 'PUT' : 'POST';
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao salvar');
+      setMessage(editing ? 'Cliente atualizado!' : 'Cliente cadastrado!');
+      setTimeout(() => { setShowForm(false); setMessage(''); load(q); }, 800);
+    } catch (e: any) {
+      setMessage(`Erro: ${e.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const desativar = async (id: string) => {
+    if (!confirm('Desativar este cliente? Ele continuará no histórico, mas não aparece nas buscas do agente.')) return;
+    await fetch(`/api/clientes/${id}`, { method: 'DELETE' });
+    load(q);
+  };
+
+  const field = (k: string, label: string, opts: { wide?: boolean; placeholder?: string; type?: string } = {}) => (
+    <div className={opts.wide ? 'col-span-2' : ''}>
+      <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1">{label}</label>
+      <input
+        type={opts.type || 'text'}
+        value={form[k] ?? ''}
+        onChange={(e) => setForm({ ...form, [k]: e.target.value })}
+        placeholder={opts.placeholder}
+        className="w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl text-sm text-white placeholder:text-slate-600 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+      />
+    </div>
+  );
+
+  return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex justify-between items-end">
+        <div>
+          <h2 className="text-4xl font-bold text-white">Clientes</h2>
+          <p className="text-slate-400 mt-2">Base de clientes da Win. O agente busca esses cadastros pra vincular orçamentos.</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => load(q)} className="px-4 py-2 bg-white/10 text-white font-bold rounded-xl border border-white/10 hover:bg-white/20 transition-colors text-sm">Atualizar</button>
+          <button onClick={openCreate} className="px-4 py-2 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded-xl text-sm font-bold transition-colors shadow-lg shadow-indigo-900/20">+ Novo cliente</button>
+        </div>
+      </div>
+
+      <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-4 flex gap-2">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') load(q); }}
+          placeholder="Buscar por nome, fantasia, CPF/CNPJ, telefone, ID externo..."
+          className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-slate-500"
+        />
+        <button onClick={() => load(q)} className="px-4 py-2 bg-indigo-500/20 border border-indigo-500/30 hover:bg-indigo-500/30 text-indigo-200 text-sm rounded-xl transition-colors">Buscar</button>
+        <button onClick={() => { setQ(''); load(''); }} className="px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-sm rounded-xl transition-colors">Limpar</button>
+      </div>
+
+      <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[58vh]">
+        <div className="p-4 border-b border-white/10 flex justify-between items-center">
+          <h3 className="font-bold text-white text-sm">{q ? `Resultados para "${q}"` : 'Todos os clientes'}</h3>
+          <span className="text-xs text-slate-500">{list.length}</span>
+        </div>
+        <div className="overflow-auto flex-1">
+          <table className="w-full text-left">
+            <thead className="bg-slate-950/50 sticky top-0 z-10 backdrop-blur-md">
+              <tr className="text-[10px] uppercase text-slate-500">
+                <th className="px-4 py-4 font-bold">Nome / Fantasia</th>
+                <th className="px-4 py-4 font-bold">Tipo</th>
+                <th className="px-4 py-4 font-bold">CPF/CNPJ</th>
+                <th className="px-4 py-4 font-bold">Telefone</th>
+                <th className="px-4 py-4 font-bold">Cidade/UF</th>
+                <th className="px-4 py-4 font-bold text-center">Ativo</th>
+                <th className="px-4 py-4 font-bold text-right">Ações</th>
+              </tr>
+            </thead>
+            <tbody className="text-sm">
+              {loading ? (
+                <tr><td colSpan={7} className="p-8 text-center text-slate-500">Carregando...</td></tr>
+              ) : list.length === 0 ? (
+                <tr><td colSpan={7} className="p-8 text-center text-slate-500">Nenhum cliente encontrado.</td></tr>
+              ) : list.map(c => (
+                <tr key={c.id} className={cn('border-t border-white/5 hover:bg-white/5 transition-colors', !c.ativo && 'opacity-50')}>
+                  <td className="px-4 py-3">
+                    <p className="text-slate-100 font-medium truncate max-w-xs">{c.nome}</p>
+                    {c.fantasia && c.fantasia.toLowerCase() !== String(c.nome).toLowerCase() && (
+                      <p className="text-xs text-slate-500 truncate max-w-xs">{c.fantasia}</p>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-slate-400">{c.tipo_pessoa || '—'}</td>
+                  <td className="px-4 py-3 text-xs font-mono text-slate-400">{c.cpf_cnpj || '—'}</td>
+                  <td className="px-4 py-3 text-xs text-slate-400">{c.celular || c.fone || '—'}</td>
+                  <td className="px-4 py-3 text-xs text-slate-400">{c.cidade ? `${c.cidade}${c.uf ? '/' + c.uf : ''}` : '—'}</td>
+                  <td className="px-4 py-3 text-center">
+                    <span className={cn('inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold', c.ativo ? 'bg-green-500/20 text-green-400' : 'bg-slate-500/20 text-slate-400')}>
+                      {c.ativo ? 'ATIVO' : 'INATIVO'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right space-x-2">
+                    <button onClick={() => openEdit(c.id)} className="px-2.5 py-1 text-xs rounded-md bg-white/10 hover:bg-white/20 text-white">Editar</button>
+                    {c.ativo && <button onClick={() => desativar(c.id)} className="px-2.5 py-1 text-xs rounded-md bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30">Desativar</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {showForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm" onClick={() => setShowForm(false)}>
+          <div className="bg-slate-900 border border-white/10 rounded-3xl max-w-3xl w-full max-h-[85vh] overflow-auto p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-2xl font-bold text-white">{editing ? 'Editar cliente' : 'Novo cliente'}</h3>
+              <button onClick={() => setShowForm(false)} className="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              {field('nome', 'Nome *', { wide: true, placeholder: 'Obrigatório' })}
+              {field('fantasia', 'Fantasia / nome de tela', { wide: true })}
+              <div>
+                <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1">Tipo de pessoa</label>
+                <select value={form.tipo_pessoa || ''} onChange={(e) => setForm({ ...form, tipo_pessoa: e.target.value })} className="w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl text-sm text-white">
+                  <option value="">—</option>
+                  <option value="Pessoa Física">Pessoa Física</option>
+                  <option value="Pessoa Jurídica">Pessoa Jurídica</option>
+                </select>
+              </div>
+              {field('cpf_cnpj', 'CPF / CNPJ')}
+              {field('fone', 'Telefone')}
+              {field('celular', 'Celular')}
+              {field('email', 'E-mail')}
+              {field('email_nfe', 'E-mail (NFe)')}
+              {field('cep', 'CEP')}
+              {field('uf', 'UF')}
+              {field('cidade', 'Cidade')}
+              {field('bairro', 'Bairro')}
+              {field('endereco', 'Endereço', { wide: true })}
+              {field('numero', 'Número')}
+              {field('complemento', 'Complemento')}
+              {field('tipo_contato', 'Tipo de contato', { placeholder: 'Cliente / Fornecedor / ...' })}
+              {field('vendedor', 'Vendedor responsável')}
+              <div className="col-span-2">
+                <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1">Observações</label>
+                <textarea
+                  value={form.observacoes || ''}
+                  onChange={(e) => setForm({ ...form, observacoes: e.target.value })}
+                  className="w-full h-20 px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl text-sm text-white placeholder:text-slate-600 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-between mt-5 pt-4 border-t border-white/10">
+              <div className={cn('text-sm font-medium', message.startsWith('Erro') ? 'text-rose-400' : 'text-emerald-400')}>{message}</div>
+              <div className="flex gap-2">
+                <button onClick={() => setShowForm(false)} className="px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-sm rounded-xl">Cancelar</button>
+                <button onClick={save} disabled={saving} className="px-5 py-2 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded-xl text-sm font-bold disabled:opacity-50">{saving ? 'Salvando...' : (editing ? 'Salvar alterações' : 'Cadastrar')}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
