@@ -36,16 +36,18 @@ Dependências: Fase 0 (modularização).
 - [x] Frontend: `AuthContext`, `LoginScreen`, patch global de `fetch` (`credentials: 'include'` + handling de 401), sidebar filtrada por permissão, logout no header.
 - [x] Documentação atualizada (CLAUDE, SCHEMA, ARCHITECTURE, DECISIONS).
 
-### 1b — Gestão de sub-logins no painel
-- Tela "Usuários" (só admin).
-- Admin cria sub-logins, atribui permissões granulares (checkboxes por tab/feature), opcionalmente vincula a um vendedor existente.
-- Admin pode revogar, redefinir senha, ativar/desativar.
-- Backend já está pronto (Fase 1a) — só a UI.
+### 1b — Gestão de sub-logins no painel ✅ CONCLUÍDA
+- [x] Tela "Usuários" no painel (sidebar visível só para admin).
+- [x] Admin cria sub-logins com nome, e-mail, senha (mín. 8 chars), role (`admin`/`sub`), vendedor vinculado opcional e permissões granulares.
+- [x] Permissões agrupadas por área (Produtos, Clientes, Orçamentos e vendas, Vendedores e histórico, Sistema) com toggle "selecionar tudo" por grupo.
+- [x] Edição: alterar nome, role, vendedor, permissões, redefinir senha, ativar/desativar.
+- [x] Proteções: usuário não pode alterar o próprio role nem desativar a si mesmo; e-mail é imutável após criação.
 
-### 1c — Tracking de custo de IA
-- Tabela `ai_usage`: `id`, `mensagem_id` (FK), `model`, `prompt_tokens`, `completion_tokens`, `cost_usd`, `created_at`.
-- Wrapper na chamada OpenAI registra usage de cada call (extrator + final).
-- Habilita card "Custo do mês" no dashboard da Fase 2.
+### 1c — Tracking de custo de IA ✅ CONCLUÍDA
+- [x] Tabela `ai_usage` (`vendedor_id`, `sessao_id`, `mensagem_id`, `model`, `purpose`, `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost_usd`, `created_at`) + índices por data, vendedor e modelo.
+- [x] Wrapper `chatComplete` em `api/lib/ai.ts` — pricing por 1M tokens, computa `cost_usd` no momento da call (snapshot), insere assíncrono (não bloqueia resposta ao vendedor).
+- [x] Aplicado em todas as chat completions: extractor + final (`gpt-4.1`) no webhook e vision (`gpt-4o`) no parser de imagem. Whisper fica fora — a API não retorna `usage`.
+- [x] Habilita o card "Custo do mês" do dashboard (Fase 2) e relatórios por vendedor/modelo.
 
 ## Fase 2 — Dashboard BI
 

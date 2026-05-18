@@ -2,7 +2,7 @@ import { Router, type Response } from 'express';
 import { pool } from '../db/pool.js';
 import { ensureDB } from '../db/migrations.js';
 import { logger } from '../lib/logger.js';
-import { openai } from '../lib/openai.js';
+import { chatComplete } from '../lib/ai.js';
 import { sendWhatsAppMessage } from '../services/whatsapp.js';
 import { searchProducts, searchClientes, type ClienteMatch } from '../services/search.js';
 import { gravarOrcamento, resolverClienteEGravar } from '../services/orcamentos.js';
@@ -358,7 +358,7 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
       content: row.conteudo,
     }));
 
-    const extractResponse = await openai.chat.completions.create({
+    const extractResponse = await chatComplete({
       model: 'gpt-4.1',
       temperature: 0,
       response_format: { type: 'json_object' },
@@ -367,7 +367,7 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
         ...historyMessages,
         { role: 'user', content: incomingText },
       ],
-    });
+    }, { vendedorId, sessaoId: currentSessionId, purpose: 'extract' });
 
     const rawExtract = extractResponse.choices[0].message.content || '{}';
     let parsedExtract: {
@@ -545,14 +545,14 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
       alteracaoBlock,
     });
 
-    const finalResponse = await openai.chat.completions.create({
+    const finalResponse = await chatComplete({
       model: 'gpt-4.1',
       messages: [
         { role: 'system', content: finalPrompt },
         ...historyMessages,
       ],
       tools,
-    });
+    }, { vendedorId, sessaoId: currentSessionId, purpose: 'final' });
 
     const choice = finalResponse.choices[0].message;
     const toolCall = choice.tool_calls?.find(

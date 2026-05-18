@@ -198,6 +198,28 @@ async function initDB(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(lower(email));`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_vendedor_id ON users(vendedor_id);`);
 
+    // --- Tracking de custo de IA (Fase 1c) ---
+    // FKs com ON DELETE SET NULL para preservar agregados históricos
+    // mesmo quando vendedor/sessão/mensagem forem removidos.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ai_usage (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        vendedor_id UUID REFERENCES vendedores(id) ON DELETE SET NULL,
+        sessao_id UUID REFERENCES sessoes(id) ON DELETE SET NULL,
+        mensagem_id UUID REFERENCES mensagens(id) ON DELETE SET NULL,
+        model TEXT NOT NULL,
+        purpose TEXT,
+        prompt_tokens INTEGER NOT NULL DEFAULT 0,
+        completion_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd NUMERIC(12, 6) NOT NULL DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ai_usage_created_at ON ai_usage(created_at DESC);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ai_usage_vendedor_created ON ai_usage(vendedor_id, created_at DESC);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ai_usage_model_created ON ai_usage(model, created_at DESC);`);
+
     await client.query(`
       INSERT INTO system_config (id, core_prompt, session_timeout_hours)
       VALUES ('default', $1, 2)

@@ -55,6 +55,7 @@ Variáveis em `.env` (modelo em `.env.example`):
 | Webhook do Evolution (pipeline principal) | `api/routes/webhook.ts` |
 | REST do painel | `api/routes/{products,clientes,orcamentos,vendedores,config,setup}.ts` |
 | OpenAI client singleton | `api/lib/openai.ts` |
+| Wrapper de chat completion + tracking de custo em `ai_usage` | `api/lib/ai.ts` |
 | Logger estruturado | `api/lib/logger.ts` |
 | Auth (bcrypt, JWT, permissões) | `api/lib/auth.ts` |
 | Middleware (requireAuth, requirePermission) | `api/middleware/auth.ts` |

@@ -191,6 +191,30 @@ Login do painel administrativo. Não tem nada a ver com `vendedores` (que é o c
 
 **Permissions disponíveis** (subset, ver fonte para a lista canônica): `products.view`, `products.edit`, `products.import`, `clientes.view`, `clientes.edit`, `clientes.delete`, `orcamentos.view`, `orcamentos.edit`, `vendas.view`, `vendedores.view`, `vendedores.edit`, `historico.view`, `config.view`, `config.edit`, `dashboard.view`, `users.manage`.
 
+### `ai_usage` (Fase 1c)
+Log de cada chamada de chat completion à OpenAI — tokens, modelo, custo estimado em USD. Whisper **não** está aqui (a API não retorna usage). Habilita o card "Custo do mês" do dashboard (Fase 2) e relatórios por vendedor/modelo.
+
+| Coluna | Tipo | Default | Nota |
+|---|---|---|---|
+| `id` | UUID PK | uuid_generate_v4() | |
+| `vendedor_id` | UUID FK → vendedores | NULL | SET NULL no delete (preserva agregado histórico) |
+| `sessao_id` | UUID FK → sessoes | NULL | SET NULL no delete |
+| `mensagem_id` | UUID FK → mensagens | NULL | Hoje sempre NULL — extract/final rodam fora da janela de gravação da mensagem. Mantido para vínculo futuro. |
+| `model` | TEXT NOT NULL | — | Ex: `gpt-4.1`, `gpt-4o` |
+| `purpose` | TEXT | NULL | `extract` \| `final` \| `vision` (livre) |
+| `prompt_tokens` | INTEGER NOT NULL | 0 | |
+| `completion_tokens` | INTEGER NOT NULL | 0 | |
+| `total_tokens` | INTEGER NOT NULL | 0 | |
+| `cost_usd` | NUMERIC(12, 6) NOT NULL | 0 | **Snapshot** computado em `api/lib/ai.ts` no momento da call. Pricing atualizado lá. |
+| `created_at` | TIMESTAMP | now() | |
+
+Índices:
+- `idx_ai_usage_created_at` (created_at DESC)
+- `idx_ai_usage_vendedor_created` (vendedor_id, created_at DESC)
+- `idx_ai_usage_model_created` (model, created_at DESC)
+
+**Gravação:** fire-and-forget em `recordUsage()` — falha de insert é logada mas não bloqueia a resposta ao vendedor.
+
 ## Shapes JSONB
 
 ### `orcamentos.itens`

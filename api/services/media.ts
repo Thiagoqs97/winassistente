@@ -1,8 +1,10 @@
 import * as xlsx from 'xlsx';
 import { openai } from '../lib/openai.js';
+import { chatComplete, type AiCallMeta } from '../lib/ai.js';
 import { logger } from '../lib/logger.js';
 
 export async function transcribeAudio(base64: string): Promise<string> {
+  // Whisper não expõe `usage` na resposta — não rastreado em ai_usage.
   const audioBuffer = Buffer.from(base64, 'base64');
   const audioBlob = new Blob([audioBuffer], { type: 'audio/ogg' });
   const audioFile = new File([audioBlob], 'audio.ogg', { type: 'audio/ogg' });
@@ -14,8 +16,8 @@ export async function transcribeAudio(base64: string): Promise<string> {
   return transcription.text;
 }
 
-export async function describeImage(base64: string): Promise<string> {
-  const resp = await openai.chat.completions.create({
+export async function describeImage(base64: string, meta?: Partial<AiCallMeta>): Promise<string> {
+  const resp = await chatComplete({
     model: 'gpt-4o',
     messages: [{
       role: 'user',
@@ -31,7 +33,7 @@ export async function describeImage(base64: string): Promise<string> {
       ],
     }],
     max_tokens: 1024,
-  });
+  }, { purpose: 'vision', ...meta });
   return resp.choices[0].message.content || '';
 }
 

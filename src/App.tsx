@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { PackageOpen, MessageSquare, Settings, Upload, History, FileText, ShoppingBag, Users, LogOut } from 'lucide-react';
+import { PackageOpen, MessageSquare, Settings, Upload, History, FileText, ShoppingBag, Users, UserCog, LogOut } from 'lucide-react';
 import { cn } from './lib/utils';
 import { useAuth } from './auth/AuthContext';
 import { LoginScreen } from './auth/LoginScreen';
-import { hasAnyPermission, type Permission } from './lib/permissions';
+import { hasAnyPermission, PERMISSION_LABELS, PERMISSIONS, type Permission } from './lib/permissions';
 
-type TabKey = 'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas' | 'clientes';
+type TabKey = 'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas' | 'clientes' | 'users';
 
 // Cada tab declara as permissões que dão acesso (admin sempre vê tudo).
+// 'users' é admin-only — a checagem real é feita pelo role, não pela permissão.
 const TAB_PERMS: Record<TabKey, Permission[]> = {
   import: ['products.import'],
   products: ['products.view'],
@@ -16,6 +17,7 @@ const TAB_PERMS: Record<TabKey, Permission[]> = {
   orcamentos: ['orcamentos.view'],
   vendas: ['vendas.view'],
   settings: ['config.view'],
+  users: ['users.manage'],
 };
 
 export default function App() {
@@ -40,8 +42,11 @@ function ProtectedApp() {
 
   // Determina as tabs visíveis para este usuário e define a inicial.
   const visibleTabs = useMemo<TabKey[]>(() => {
-    const all: TabKey[] = ['import', 'products', 'clientes', 'history', 'orcamentos', 'vendas', 'settings'];
-    return all.filter(t => hasAnyPermission(u, ...TAB_PERMS[t]));
+    const all: TabKey[] = ['import', 'products', 'clientes', 'history', 'orcamentos', 'vendas', 'settings', 'users'];
+    return all.filter(t => {
+      if (t === 'users') return u.role === 'admin';
+      return hasAnyPermission(u, ...TAB_PERMS[t]);
+    });
   }, [u]);
 
   const [activeTab, setActiveTab] = useState<TabKey>(() => visibleTabs[0] || 'orcamentos');
@@ -110,6 +115,7 @@ function ProtectedApp() {
             {visibleTabs.includes('orcamentos') && <SidebarItem icon={<FileText size={16} />} label="Orçamentos" active={activeTab === 'orcamentos'} onClick={() => setActiveTab('orcamentos')} />}
             {visibleTabs.includes('vendas') && <SidebarItem icon={<ShoppingBag size={16} />} label="Vendas" active={activeTab === 'vendas'} onClick={() => setActiveTab('vendas')} />}
             {visibleTabs.includes('settings') && <SidebarItem icon={<Settings size={16} />} label="Configurações" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />}
+            {visibleTabs.includes('users') && <SidebarItem icon={<UserCog size={16} />} label="Usuários" active={activeTab === 'users'} onClick={() => setActiveTab('users')} />}
           </div>
 
           <div className="mt-auto p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-2xl">
@@ -127,6 +133,7 @@ function ProtectedApp() {
             {activeTab === 'orcamentos' && <OrcamentosTab mode="orcamentos" />}
             {activeTab === 'vendas' && <OrcamentosTab mode="vendas" />}
             {activeTab === 'settings' && <SettingsTab />}
+            {activeTab === 'users' && <UsersTab currentUserId={u.id} />}
           </div>
         </main>
       </div>
@@ -935,6 +942,418 @@ function SettingsTab() {
             Configurar Webhook Agora
           </button>
           <span className={cn('text-sm font-medium', webhookStatus.startsWith('Erro') ? 'text-red-400' : 'text-slate-400')}>{webhookStatus}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Agrupamento visual das permissões. Mantém PERMISSIONS como fonte da verdade;
+// permissões não listadas aqui caem em "Outras" (defensivo, p/ não sumirem).
+const PERMISSION_GROUPS: { label: string; perms: Permission[] }[] = [
+  { label: 'Produtos', perms: ['products.view', 'products.edit', 'products.import'] },
+  { label: 'Clientes', perms: ['clientes.view', 'clientes.edit', 'clientes.delete'] },
+  { label: 'Orçamentos e vendas', perms: ['orcamentos.view', 'orcamentos.edit', 'vendas.view'] },
+  { label: 'Vendedores e histórico', perms: ['vendedores.view', 'vendedores.edit', 'historico.view'] },
+  { label: 'Sistema', perms: ['dashboard.view', 'config.view', 'config.edit', 'users.manage'] },
+];
+
+interface UserRow {
+  id: string;
+  email: string;
+  nome: string;
+  role: 'admin' | 'sub';
+  vendedor_id: string | null;
+  vendedor_nome: string | null;
+  permissions: Permission[];
+  ativo: boolean;
+  criado_em: string;
+  ultimo_login: string | null;
+}
+
+function UsersTab({ currentUserId }: { currentUserId: string }) {
+  const [list, setList] = useState<UserRow[]>([]);
+  const [vendedores, setVendedores] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<UserRow | null>(null);
+  const [message, setMessage] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [usersRes, vendsRes] = await Promise.all([
+        fetch('/api/users'),
+        fetch('/api/vendedores'),
+      ]);
+      const users = await usersRes.json();
+      const vends = await vendsRes.json();
+      setList(Array.isArray(users) ? users : []);
+      setVendedores(Array.isArray(vends) ? vends : []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const openCreate = () => { setEditing(null); setShowForm(true); setMessage(''); };
+  const openEdit = (u: UserRow) => { setEditing(u); setShowForm(true); setMessage(''); };
+
+  const toggleAtivo = async (u: UserRow) => {
+    if (u.id === currentUserId) { alert('Você não pode desativar sua própria conta.'); return; }
+    const novo = !u.ativo;
+    if (!confirm(`${novo ? 'Ativar' : 'Desativar'} ${u.nome}?`)) return;
+    try {
+      const res = await fetch(`/api/users/${u.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ativo: novo }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Erro');
+      }
+      load();
+    } catch (e: any) {
+      alert(`Erro: ${e.message}`);
+    }
+  };
+
+  return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex justify-between items-end">
+        <div>
+          <h2 className="text-4xl font-bold text-white">Usuários</h2>
+          <p className="text-slate-400 mt-2">Crie sub-logins para o painel, defina permissões e vincule a vendedores.</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={load} className="px-4 py-2 bg-white/10 text-white font-bold rounded-xl border border-white/10 hover:bg-white/20 transition-colors text-sm">Atualizar</button>
+          <button onClick={openCreate} className="px-4 py-2 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded-xl text-sm font-bold transition-colors shadow-lg shadow-indigo-900/20">+ Novo usuário</button>
+        </div>
+      </div>
+
+      <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[68vh]">
+        <div className="p-4 border-b border-white/10 flex justify-between items-center">
+          <h3 className="font-bold text-white text-sm">Usuários do painel</h3>
+          <span className="text-xs text-slate-500">{list.length}</span>
+        </div>
+        <div className="overflow-auto flex-1">
+          <table className="w-full text-left">
+            <thead className="bg-slate-950/50 sticky top-0 z-10 backdrop-blur-md">
+              <tr className="text-[10px] uppercase text-slate-500">
+                <th className="px-4 py-4 font-bold">Nome / E-mail</th>
+                <th className="px-4 py-4 font-bold">Role</th>
+                <th className="px-4 py-4 font-bold">Vendedor</th>
+                <th className="px-4 py-4 font-bold">Permissões</th>
+                <th className="px-4 py-4 font-bold">Último login</th>
+                <th className="px-4 py-4 font-bold text-center">Status</th>
+                <th className="px-4 py-4 font-bold text-right">Ações</th>
+              </tr>
+            </thead>
+            <tbody className="text-sm">
+              {loading ? (
+                <tr><td colSpan={7} className="p-8 text-center text-slate-500">Carregando...</td></tr>
+              ) : list.length === 0 ? (
+                <tr><td colSpan={7} className="p-8 text-center text-slate-500">Nenhum usuário cadastrado.</td></tr>
+              ) : list.map(u => (
+                <tr key={u.id} className={cn('border-t border-white/5 hover:bg-white/5 transition-colors', !u.ativo && 'opacity-50')}>
+                  <td className="px-4 py-3">
+                    <p className="text-slate-100 font-medium">{u.nome}</p>
+                    <p className="text-xs text-slate-500">{u.email}</p>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className={cn('inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold', u.role === 'admin' ? 'bg-indigo-500/20 text-indigo-300' : 'bg-slate-500/20 text-slate-300')}>
+                      {u.role === 'admin' ? 'ADMIN' : 'SUB'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-slate-400">{u.vendedor_nome || '—'}</td>
+                  <td className="px-4 py-3 text-xs text-slate-400">
+                    {u.role === 'admin' ? <span className="italic">Acesso total</span> : `${u.permissions?.length || 0} permissão(ões)`}
+                  </td>
+                  <td className="px-4 py-3 text-xs text-slate-400">{u.ultimo_login ? new Date(u.ultimo_login).toLocaleString('pt-BR') : 'nunca'}</td>
+                  <td className="px-4 py-3 text-center">
+                    <span className={cn('inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold', u.ativo ? 'bg-green-500/20 text-green-400' : 'bg-slate-500/20 text-slate-400')}>
+                      {u.ativo ? 'ATIVO' : 'INATIVO'}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
+                    <button onClick={() => openEdit(u)} className="px-2.5 py-1 text-xs rounded-md bg-white/10 hover:bg-white/20 text-white">Editar</button>
+                    {u.id !== currentUserId && (
+                      <button onClick={() => toggleAtivo(u)} className={cn('px-2.5 py-1 text-xs rounded-md border', u.ativo ? 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border-rose-500/30' : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border-emerald-500/30')}>
+                        {u.ativo ? 'Desativar' : 'Ativar'}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {showForm && (
+        <UserFormModal
+          editing={editing}
+          vendedores={vendedores}
+          currentUserId={currentUserId}
+          onClose={() => setShowForm(false)}
+          onSaved={() => { setShowForm(false); setMessage(''); load(); }}
+        />
+      )}
+
+      {message && <div className="text-sm text-emerald-400">{message}</div>}
+    </div>
+  );
+}
+
+function UserFormModal({
+  editing,
+  vendedores,
+  currentUserId,
+  onClose,
+  onSaved,
+}: {
+  editing: UserRow | null;
+  vendedores: any[];
+  currentUserId: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const isEdit = !!editing;
+  const [email, setEmail] = useState(editing?.email || '');
+  const [nome, setNome] = useState(editing?.nome || '');
+  const [password, setPassword] = useState('');
+  const [role, setRole] = useState<'admin' | 'sub'>(editing?.role || 'sub');
+  const [vendedorId, setVendedorId] = useState<string>(editing?.vendedor_id || '');
+  const [permissions, setPermissions] = useState<Permission[]>(editing?.permissions || []);
+  const [ativo, setAtivo] = useState<boolean>(editing?.ativo ?? true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  // Garante que toda permissão da lista canônica é considerada, mesmo que
+  // o backend evolua e o agrupamento aqui fique pra trás.
+  const groupedPermsSet = new Set(PERMISSION_GROUPS.flatMap(g => g.perms));
+  const orphans = PERMISSIONS.filter(p => !groupedPermsSet.has(p)) as Permission[];
+
+  const togglePerm = (p: Permission) => {
+    setPermissions(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]);
+  };
+
+  const toggleGroupAll = (groupPerms: Permission[]) => {
+    const allSelected = groupPerms.every(p => permissions.includes(p));
+    if (allSelected) {
+      setPermissions(prev => prev.filter(p => !groupPerms.includes(p)));
+    } else {
+      setPermissions(prev => Array.from(new Set([...prev, ...groupPerms])));
+    }
+  };
+
+  const save = async () => {
+    setError('');
+    if (!nome.trim()) { setError('Nome é obrigatório.'); return; }
+    if (!isEdit && !email.trim()) { setError('E-mail é obrigatório.'); return; }
+    if (!isEdit && password.length < 8) { setError('Senha precisa ter ao menos 8 caracteres.'); return; }
+    if (isEdit && password.length > 0 && password.length < 8) { setError('Nova senha precisa ter ao menos 8 caracteres.'); return; }
+
+    setSaving(true);
+    try {
+      let res: Response;
+      if (isEdit) {
+        const body: any = {
+          nome: nome.trim(),
+          role,
+          vendedor_id: vendedorId || null,
+          permissions: role === 'admin' ? [] : permissions,
+          ativo,
+        };
+        if (password) body.password = password;
+        res = await fetch(`/api/users/${editing!.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } else {
+        const body = {
+          email: email.trim(),
+          password,
+          nome: nome.trim(),
+          role,
+          vendedor_id: vendedorId || null,
+          permissions: role === 'admin' ? [] : permissions,
+        };
+        res = await fetch('/api/users', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Erro ao salvar');
+      onSaved();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const isSelf = isEdit && editing!.id === currentUserId;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-slate-900 border border-white/10 rounded-3xl max-w-3xl w-full max-h-[88vh] overflow-auto p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-2xl font-bold text-white">{isEdit ? 'Editar usuário' : 'Novo usuário'}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="col-span-2">
+            <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1">Nome *</label>
+            <input value={nome} onChange={(e) => setNome(e.target.value)} className="w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl text-sm text-white focus:ring-2 focus:ring-indigo-500" />
+          </div>
+
+          <div className="col-span-2">
+            <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1">E-mail {isEdit ? '' : '*'}</label>
+            <input
+              type="email"
+              value={email}
+              disabled={isEdit}
+              onChange={(e) => setEmail(e.target.value)}
+              className={cn('w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl text-sm text-white focus:ring-2 focus:ring-indigo-500', isEdit && 'opacity-60 cursor-not-allowed')}
+              placeholder="usuario@empresa.com"
+            />
+            {isEdit && <p className="text-[10px] text-slate-500 mt-1">E-mail não pode ser alterado.</p>}
+          </div>
+
+          <div className="col-span-2">
+            <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1">
+              {isEdit ? 'Nova senha (deixe vazio para manter)' : 'Senha * (mín. 8 chars)'}
+            </label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl text-sm text-white focus:ring-2 focus:ring-indigo-500"
+              placeholder={isEdit ? '••••••••' : 'Mínimo 8 caracteres'}
+              autoComplete="new-password"
+            />
+          </div>
+
+          <div>
+            <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1">Tipo</label>
+            <select
+              value={role}
+              disabled={isSelf}
+              onChange={(e) => setRole(e.target.value as 'admin' | 'sub')}
+              className={cn('w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl text-sm text-white', isSelf && 'opacity-60 cursor-not-allowed')}
+            >
+              <option value="sub">Sub-login (granular)</option>
+              <option value="admin">Administrador (acesso total)</option>
+            </select>
+            {isSelf && <p className="text-[10px] text-slate-500 mt-1">Você não pode mudar seu próprio role.</p>}
+          </div>
+
+          <div>
+            <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1">Vendedor vinculado</label>
+            <select
+              value={vendedorId}
+              onChange={(e) => setVendedorId(e.target.value)}
+              className="w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl text-sm text-white"
+            >
+              <option value="">— Sem vínculo (vê tudo o que a permissão permitir) —</option>
+              {vendedores.map(v => (
+                <option key={v.id} value={v.id}>{v.nome || v.numero_whatsapp}</option>
+              ))}
+            </select>
+            <p className="text-[10px] text-slate-500 mt-1">Se vinculado e role = sub, o usuário só enxerga dados do próprio vendedor.</p>
+          </div>
+
+          {isEdit && (
+            <div className="col-span-2 flex items-center gap-2 mt-1">
+              <input
+                id="ativo-toggle"
+                type="checkbox"
+                checked={ativo}
+                disabled={isSelf}
+                onChange={(e) => setAtivo(e.target.checked)}
+                className="w-4 h-4 rounded border-white/20 bg-slate-950"
+              />
+              <label htmlFor="ativo-toggle" className={cn('text-sm text-slate-300', isSelf && 'opacity-60')}>Usuário ativo</label>
+              {isSelf && <span className="text-[10px] text-slate-500">(você não pode desativar a si mesmo)</span>}
+            </div>
+          )}
+
+          {role === 'sub' && (
+            <div className="col-span-2 mt-2">
+              <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-2">Permissões</p>
+              <div className="space-y-4">
+                {PERMISSION_GROUPS.map(g => {
+                  const allSelected = g.perms.every(p => permissions.includes(p));
+                  const someSelected = g.perms.some(p => permissions.includes(p));
+                  return (
+                    <div key={g.label} className="rounded-2xl border border-white/10 bg-slate-950/40 p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-xs font-bold text-slate-200">{g.label}</p>
+                        <button
+                          type="button"
+                          onClick={() => toggleGroupAll(g.perms)}
+                          className="text-[10px] px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10"
+                        >
+                          {allSelected ? 'Limpar tudo' : someSelected ? 'Selecionar tudo' : 'Selecionar tudo'}
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+                        {g.perms.map(p => (
+                          <label key={p} className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer hover:text-white">
+                            <input
+                              type="checkbox"
+                              checked={permissions.includes(p)}
+                              onChange={() => togglePerm(p)}
+                              className="w-4 h-4 rounded border-white/20 bg-slate-950"
+                            />
+                            <span>{PERMISSION_LABELS[p]}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {orphans.length > 0 && (
+                  <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-3">
+                    <p className="text-xs font-bold text-amber-300 mb-2">Outras permissões</p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+                      {orphans.map(p => (
+                        <label key={p} className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer hover:text-white">
+                          <input
+                            type="checkbox"
+                            checked={permissions.includes(p)}
+                            onChange={() => togglePerm(p)}
+                            className="w-4 h-4 rounded border-white/20 bg-slate-950"
+                          />
+                          <span>{PERMISSION_LABELS[p] || p}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between mt-5 pt-4 border-t border-white/10">
+          <div className="text-sm font-medium text-rose-400">{error}</div>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-sm rounded-xl">Cancelar</button>
+            <button onClick={save} disabled={saving} className="px-5 py-2 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded-xl text-sm font-bold disabled:opacity-50">
+              {saving ? 'Salvando...' : (isEdit ? 'Salvar alterações' : 'Criar usuário')}
+            </button>
+          </div>
         </div>
       </div>
     </div>
