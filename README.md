@@ -1,20 +1,43 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# WIN Distribuidora — Assistente de Vendas WhatsApp
 
-# Run and deploy your AI Studio app
+Sistema autônomo de atendimento a representantes de vendas pelo WhatsApp, com agente de IA que entende pedidos em texto/áudio/imagem/planilha, faz busca fuzzy no estoque e gera orçamentos sem intervenção humana. Inclui painel administrativo (React) para gestão de estoque, clientes, histórico, orçamentos, vendas e configurações.
 
-This contains everything you need to run your app locally.
+Stack: **React 19 + Vite** · **Node 22 + Express + TypeScript** · **Supabase Postgres** · **Evolution API** · **OpenAI (gpt-4.1, gpt-4o, whisper-1)** · deploy na **Vercel**.
 
-View your app in AI Studio: https://ai.studio/apps/077ce288-a68a-4848-bec1-a88e0c095d4f
+## Documentação
 
-## Run Locally
+Comece pelo **[`CLAUDE.md`](CLAUDE.md)** — guia operacional com comandos, convenções e onde mexer em cada coisa.
 
-**Prerequisites:**  Node.js
+| Documento | Conteúdo |
+|---|---|
+| [`CLAUDE.md`](CLAUDE.md) | Guia operacional (porta de entrada) |
+| [`pdr-win-assistente.md`](pdr-win-assistente.md) | PRD v3.0 |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Arquitetura lógica e pipeline da mensagem |
+| [`docs/SCHEMA.md`](docs/SCHEMA.md) | Esquema do banco |
+| [`docs/FLOWS.md`](docs/FLOWS.md) | Fluxos críticos passo-a-passo |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | ADRs |
+| [`docs/PDF_ORCAMENTO.md`](docs/PDF_ORCAMENTO.md) | Template do PDF |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Fases 0–4 |
 
+## Quickstart
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+```bash
+npm install
+cp .env.example .env   # preencher OPENAI_API_KEY, DATABASE_URL, EVO_*, VITE_APP_URL
+npm run dev            # http://localhost:3000
+```
+
+## Scripts
+
+| Comando | Função |
+|---|---|
+| `npm run dev` | Backend Express + Vite middleware (dev) |
+| `npm run lint` | Typecheck TypeScript (`tsc --noEmit`) |
+| `npm run build` | Build do frontend |
+| `npm run build:all` | Build frontend + bundle do servidor |
+| `npm run start` | Roda o servidor bundled |
+
+## Deploy
+
+- Push em `main` no GitHub dispara deploy automático na Vercel.
+- Webhook do Evolution deve apontar para `${VITE_APP_URL}/api/webhook/evolution`. Reconfigurar pelo painel em **Configurações → Configurar Webhook Agora**.

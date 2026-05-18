@@ -1,0 +1,29 @@
+import { Router } from 'express';
+import axios from 'axios';
+import { logger } from '../lib/logger.js';
+
+export const setupRouter = Router();
+
+setupRouter.post('/setup-webhook', async (req, res) => {
+  const { appUrl } = req.body;
+  try {
+    const webhookPayload = {
+      webhook: {
+        enabled: true,
+        url: `${appUrl}/api/webhook/evolution`,
+        webhookByEvents: false,
+        webhookBase64: true,
+        events: ['MESSAGES_UPSERT'],
+      },
+    };
+    const response = await axios.post(
+      `${process.env.EVO_URL}/webhook/set/${process.env.EVO_INSTANCE}`,
+      webhookPayload,
+      { headers: { apikey: process.env.EVO_APIKEY } }
+    );
+    res.json({ success: true, data: response.data });
+  } catch (err: any) {
+    logger.error('Webhook setup failed', { err: err?.response?.data || err?.message });
+    res.status(500).json({ error: err?.response?.data || err.message });
+  }
+});
