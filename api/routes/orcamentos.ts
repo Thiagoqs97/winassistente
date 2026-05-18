@@ -1,10 +1,23 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { pool } from '../db/pool.js';
 import { logger } from '../lib/logger.js';
+import { requireAuth, requirePermission, type AuthRequest } from '../middleware/auth.js';
 
 export const orcamentosRouter = Router();
 
-orcamentosRouter.get('/orcamentos', async (req, res) => {
+orcamentosRouter.use(requireAuth);
+
+// Isolamento: sub-login com vendedor_id vinculado só enxerga os próprios orçamentos.
+// Admin e sub sem vendedor_id enxergam tudo.
+function vendedorFilterClause(req: AuthRequest, paramIndex: number): { sql: string; value: string | null } {
+  const u = req.user!;
+  if (u.role === 'sub' && u.vendedor_id) {
+    return { sql: `o.vendedor_id = $${paramIndex}`, value: u.vendedor_id };
+  }
+  return { sql: '', value: null };
+}
+
+orcamentosRouter.get('/orcamentos', requirePermission('orcamentos.view', 'vendas.view'), async (req: AuthRequest, res) => {
   try {
     const { numero, vendedor_id, cliente_nome, data_de, data_ate, status } = req.query as Record<string, string | undefined>;
     const limit = Math.min(parseInt((req.query.limit as string) || '50'), 200);
@@ -20,6 +33,10 @@ orcamentosRouter.get('/orcamentos', async (req, res) => {
     if (data_de) push('o.criado_em >= ?', data_de);
     if (data_ate) push('o.criado_em <= ?', data_ate);
     if (status) push('o.status = ?', status);
+
+    // Isolamento por vendedor — adicionado APÓS filtros do client (não pode ser bypassado)
+    const vf = vendedorFilterClause(req, params.length + 1);
+    if (vf.sql) { params.push(vf.value); conds.push(vf.sql); }
 
     const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
     params.push(limit, offset);
@@ -42,14 +59,21 @@ orcamentosRouter.get('/orcamentos', async (req, res) => {
   }
 });
 
-orcamentosRouter.get('/orcamentos/:numero', async (req, res) => {
+orcamentosRouter.get('/orcamentos/:numero', requirePermission('orcamentos.view', 'vendas.view'), async (req: AuthRequest, res) => {
   try {
+    const u = req.user!;
+    const params: any[] = [req.params.numero];
+    let extraWhere = '';
+    if (u.role === 'sub' && u.vendedor_id) {
+      params.push(u.vendedor_id);
+      extraWhere = ' AND o.vendedor_id = $2';
+    }
     const { rows } = await pool.query(
       `SELECT o.*, v.numero_whatsapp AS vendedor_whatsapp, v.nome AS vendedor_nome
        FROM orcamentos o
        LEFT JOIN vendedores v ON v.id = o.vendedor_id
-       WHERE o.numero = $1`,
-      [req.params.numero]
+       WHERE o.numero = $1${extraWhere}`,
+      params
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Orçamento não encontrado' });
     res.json(rows[0]);
@@ -58,41 +82,27 @@ orcamentosRouter.get('/orcamentos/:numero', async (req, res) => {
   }
 });
 
-orcamentosRouter.patch('/orcamentos/:numero/cancelar', async (req, res) => {
+async function patchStatus(req: AuthRequest, res: Response, novoStatus: 'venda' | 'cancelado' | 'aberto') {
   try {
+    const u = req.user!;
+    const params: any[] = [req.params.numero];
+    let extraWhere = '';
+    if (u.role === 'sub' && u.vendedor_id) {
+      params.push(u.vendedor_id);
+      extraWhere = ' AND vendedor_id = $2';
+    }
     const { rows } = await pool.query(
-      `UPDATE orcamentos SET status = 'cancelado', atualizado_em = NOW() WHERE numero = $1 RETURNING *`,
-      [req.params.numero]
+      `UPDATE orcamentos SET status = $${params.length + 1}, atualizado_em = NOW()
+       WHERE numero = $1${extraWhere} RETURNING *`,
+      [...params, novoStatus]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Orçamento não encontrado' });
     res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: 'Database error' });
   }
-});
+}
 
-orcamentosRouter.patch('/orcamentos/:numero/fechar', async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `UPDATE orcamentos SET status = 'venda', atualizado_em = NOW() WHERE numero = $1 RETURNING *`,
-      [req.params.numero]
-    );
-    if (rows.length === 0) return res.status(404).json({ error: 'Orçamento não encontrado' });
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: 'Database error' });
-  }
-});
-
-orcamentosRouter.patch('/orcamentos/:numero/reabrir', async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `UPDATE orcamentos SET status = 'aberto', atualizado_em = NOW() WHERE numero = $1 RETURNING *`,
-      [req.params.numero]
-    );
-    if (rows.length === 0) return res.status(404).json({ error: 'Orçamento não encontrado' });
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: 'Database error' });
-  }
-});
+orcamentosRouter.patch('/orcamentos/:numero/cancelar', requirePermission('orcamentos.edit'), (req: AuthRequest, res) => patchStatus(req, res, 'cancelado'));
+orcamentosRouter.patch('/orcamentos/:numero/fechar', requirePermission('orcamentos.edit'), (req: AuthRequest, res) => patchStatus(req, res, 'venda'));
+orcamentosRouter.patch('/orcamentos/:numero/reabrir', requirePermission('orcamentos.edit'), (req: AuthRequest, res) => patchStatus(req, res, 'aberto'));

@@ -25,18 +25,22 @@ Entregáveis:
 
 Dependências: Fase 0 (modularização).
 
-### 1a — Auth do painel
-- Schema novo: `users`, `user_permissions` (ou roles), vínculo opcional `users.vendedor_id` → `vendedores.id`.
-- Login → JWT em cookie httpOnly.
-- Middleware Express valida JWT em todas as rotas `/api/*` exceto webhook e endpoints públicos.
-- Frontend: tela de login, hook `useAuth`, redirect.
-- Isolamento por usuário: vendedor logado só vê orçamentos/vendas/clientes que sejam dele.
-- Admin (super-user) vê tudo.
+### 1a — Auth do painel ✅ CONCLUÍDA
+- [x] Schema `users` (UUID, email, password_hash bcrypt, role admin/sub, vendedor_id, permissions JSONB, ativo, criado_em, ultimo_login, criado_por).
+- [x] Bootstrap de admin inicial via env (`ADMIN_INITIAL_EMAIL` + `ADMIN_INITIAL_PASSWORD`).
+- [x] JWT em cookie httpOnly (`win_auth`, 7d, sameSite lax), validação recarregando user do banco a cada request.
+- [x] Middleware `requireAuth`, `requireRole`, `requirePermission` aplicado em todas as rotas (webhook fica fora).
+- [x] Routes `POST /api/auth/{login,logout}` + `GET /api/auth/me`.
+- [x] Routes `users` (CRUD admin-only) + `GET /api/permissions` para a UI.
+- [x] Isolamento por vendedor em `orcamentos`, `vendedores`, `sessoes`, `mensagens` quando `users.role='sub'` e `users.vendedor_id IS NOT NULL`.
+- [x] Frontend: `AuthContext`, `LoginScreen`, patch global de `fetch` (`credentials: 'include'` + handling de 401), sidebar filtrada por permissão, logout no header.
+- [x] Documentação atualizada (CLAUDE, SCHEMA, ARCHITECTURE, DECISIONS).
 
 ### 1b — Gestão de sub-logins no painel
 - Tela "Usuários" (só admin).
 - Admin cria sub-logins, atribui permissões granulares (checkboxes por tab/feature), opcionalmente vincula a um vendedor existente.
 - Admin pode revogar, redefinir senha, ativar/desativar.
+- Backend já está pronto (Fase 1a) — só a UI.
 
 ### 1c — Tracking de custo de IA
 - Tabela `ai_usage`: `id`, `mensagem_id` (FK), `model`, `prompt_tokens`, `completion_tokens`, `cost_usd`, `created_at`.

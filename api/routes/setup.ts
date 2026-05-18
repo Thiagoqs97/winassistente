@@ -1,8 +1,11 @@
 import { Router } from 'express';
 import axios from 'axios';
 import { logger } from '../lib/logger.js';
+import { requireAuth, requireRole } from '../middleware/auth.js';
 
 export const setupRouter = Router();
+
+setupRouter.use(requireAuth, requireRole('admin'));
 
 setupRouter.post('/setup-webhook', async (req, res) => {
   const { appUrl } = req.body;

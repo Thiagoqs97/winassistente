@@ -2,8 +2,11 @@ import { Router } from 'express';
 import { pool } from '../db/pool.js';
 import { logger } from '../lib/logger.js';
 import { searchClientes } from '../services/search.js';
+import { requireAuth, requirePermission } from '../middleware/auth.js';
 
 export const clientesRouter = Router();
+
+clientesRouter.use(requireAuth);
 
 const FIELDS = [
   'externo_id', 'codigo', 'nome', 'fantasia', 'tipo_pessoa', 'cpf_cnpj',
@@ -13,7 +16,7 @@ const FIELDS = [
   'regime_tributario', 'cliente_desde', 'limite_credito', 'situacao',
 ];
 
-clientesRouter.get('/clientes', async (req, res) => {
+clientesRouter.get('/clientes', requirePermission('clientes.view'), async (req, res) => {
   try {
     const { q, ativo, tipo_pessoa, cidade, uf } = req.query as Record<string, string | undefined>;
     const limit = Math.min(parseInt((req.query.limit as string) || '50'), 200);
@@ -51,7 +54,7 @@ clientesRouter.get('/clientes', async (req, res) => {
   }
 });
 
-clientesRouter.get('/clientes/:id', async (req, res) => {
+clientesRouter.get('/clientes/:id', requirePermission('clientes.view'), async (req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM clientes WHERE id = $1', [req.params.id]);
     if (rows.length === 0) return res.status(404).json({ error: 'Cliente não encontrado' });
@@ -61,7 +64,7 @@ clientesRouter.get('/clientes/:id', async (req, res) => {
   }
 });
 
-clientesRouter.post('/clientes', async (req, res) => {
+clientesRouter.post('/clientes', requirePermission('clientes.edit'), async (req, res) => {
   try {
     const body = req.body || {};
     if (!body.nome || String(body.nome).trim().length === 0) {
@@ -93,7 +96,7 @@ clientesRouter.post('/clientes', async (req, res) => {
   }
 });
 
-clientesRouter.put('/clientes/:id', async (req, res) => {
+clientesRouter.put('/clientes/:id', requirePermission('clientes.edit'), async (req, res) => {
   try {
     const body = req.body || {};
     const updateFields = [...FIELDS, 'ativo'];
@@ -119,7 +122,7 @@ clientesRouter.put('/clientes/:id', async (req, res) => {
   }
 });
 
-clientesRouter.delete('/clientes/:id', async (req, res) => {
+clientesRouter.delete('/clientes/:id', requirePermission('clientes.delete'), async (req, res) => {
   try {
     const { rows } = await pool.query(
       `UPDATE clientes SET ativo = false, atualizado_em = NOW() WHERE id = $1 RETURNING id`,

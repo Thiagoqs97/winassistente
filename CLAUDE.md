@@ -28,6 +28,8 @@ Variáveis em `.env` (modelo em `.env.example`):
 - `SUPABASE_URL`, `SUPABASE_KEY`
 - `EVO_URL`, `EVO_INSTANCE`, `EVO_APIKEY`, `GLOBAL_EVO_APIKEY`
 - `VITE_APP_URL` — URL pública (usada na configuração do webhook do Evolution)
+- `JWT_SECRET` — segredo do JWT do painel (≥32 chars); gere com `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
+- `ADMIN_INITIAL_EMAIL` + `ADMIN_INITIAL_PASSWORD` — credenciais do admin inicial criadas no primeiro boot se a tabela `users` estiver vazia (senha ≥8 chars)
 
 ## Deploy
 
@@ -54,7 +56,14 @@ Variáveis em `.env` (modelo em `.env.example`):
 | REST do painel | `api/routes/{products,clientes,orcamentos,vendedores,config,setup}.ts` |
 | OpenAI client singleton | `api/lib/openai.ts` |
 | Logger estruturado | `api/lib/logger.ts` |
+| Auth (bcrypt, JWT, permissões) | `api/lib/auth.ts` |
+| Middleware (requireAuth, requirePermission) | `api/middleware/auth.ts` |
+| Routes auth (login, logout, me) | `api/routes/auth.ts` |
+| Routes users (CRUD admin-only) | `api/routes/users.ts` |
 | UI do painel (single-page por enquanto) | `src/App.tsx` |
+| Auth no frontend (Context + LoginScreen) | `src/auth/` |
+| Permissões espelhadas no frontend | `src/lib/permissions.ts` |
+| Wrapper de fetch (credentials, 401 handling) | `src/lib/install-fetch.ts`, `src/lib/api.ts` |
 | Estilo Tailwind | `src/index.css` (Tailwind v4) |
 | Build / deploy config | `vite.config.ts`, `vercel.json` |
 | Testes | `tests/*.test.ts`, `vitest.config.ts` |
@@ -71,6 +80,21 @@ Variáveis em `.env` (modelo em `.env.example`):
 - **WhatsApp markdown**: negrito é `*texto*` (UM asterisco). NUNCA `**texto**`. Sem tabela `|`. Listas com número simples (`1. `, `2. `).
 - **IDs**: produtos = `SERIAL` (int). Demais entidades = `UUID` via `uuid-ossp`.
 - **Schema migrations**: hoje rodam idempotentemente no boot (`CREATE IF NOT EXISTS` + `ALTER ADD COLUMN IF NOT EXISTS`). Quando houver mudança destrutiva, abrir migration versionada (ver `docs/DECISIONS.md`).
+
+## Modelo de auth (Fase 1a)
+
+- **Roles**: `admin` (vê tudo, todas as permissões implícitas) e `sub` (granular via `permissions` array).
+- **Vinculação a vendedor**: `users.vendedor_id → vendedores.id` (opcional). Quando preenchido E o role é `sub`, dispara **isolamento por vendedor** em:
+  - `GET /api/orcamentos` — filtra `vendedor_id = user.vendedor_id`
+  - `GET /api/orcamentos/:numero` — 404 se o orçamento não for do user
+  - `PATCH /api/orcamentos/:numero/{fechar,cancelar,reabrir}` — 404 se não for do user
+  - `GET /api/vendedores` — só retorna o próprio
+  - `GET /api/vendedores/:vendedorId/sessoes` — 403 se não for o próprio
+  - `GET /api/sessoes/:sessaoId/mensagens` — 403 se a sessão não for sua
+- **Permissões granulares** (`api/lib/auth.ts:PERMISSIONS`): `products.view/edit/import`, `clientes.view/edit/delete`, `orcamentos.view/edit`, `vendas.view`, `vendedores.view/edit`, `historico.view`, `config.view/edit`, `dashboard.view`, `users.manage`.
+- **Webhook** (`/api/webhook/evolution`) **não** passa por auth — o Evolution chama com `apikey` próprio.
+- **JWT** em cookie httpOnly (`win_auth`), 7d de expiração. Frontend usa `credentials: 'include'` via patch global em `src/lib/install-fetch.ts`.
+- **Em 401** o frontend dispara `auth-expired` e o `AuthContext` força logout no estado local.
 
 ## Coisas que parecem bugs mas são intencionais
 

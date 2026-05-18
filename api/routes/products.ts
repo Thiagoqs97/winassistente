@@ -2,12 +2,15 @@ import { Router } from 'express';
 import * as xlsx from 'xlsx';
 import { pool } from '../db/pool.js';
 import { logger } from '../lib/logger.js';
+import { requireAuth, requirePermission } from '../middleware/auth.js';
 
 export const productsRouter = Router();
 
+productsRouter.use(requireAuth);
+
 // Upload de estoque (xlsx em base64). Vercel serverless não aceita multipart estável,
 // então o cliente envia base64 via JSON.
-productsRouter.post('/upload-stock', async (req, res) => {
+productsRouter.post('/upload-stock', requirePermission('products.import'), async (req, res) => {
   try {
     const { fileData } = req.body;
     if (!fileData) {
@@ -154,7 +157,7 @@ productsRouter.post('/upload-stock', async (req, res) => {
   }
 });
 
-productsRouter.get('/products', async (_req, res) => {
+productsRouter.get('/products', requirePermission('products.view'), async (_req, res) => {
   try {
     const { rows } = await pool.query('SELECT * FROM products ORDER BY id DESC LIMIT 500');
     res.json(rows);
@@ -163,7 +166,7 @@ productsRouter.get('/products', async (_req, res) => {
   }
 });
 
-productsRouter.put('/products/:id/toggle', async (req, res) => {
+productsRouter.put('/products/:id/toggle', requirePermission('products.edit'), async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     const { rows } = await pool.query(

@@ -166,6 +166,31 @@ Singleton com configurações globais. PK fixa `'default'`.
 | `core_prompt` | TEXT NOT NULL | (regras default) | Editado pelo admin no painel |
 | `session_timeout_hours` | INTEGER | 2 | Inatividade que encerra a sessão |
 
+### `users` (Fase 1a)
+Login do painel administrativo. Não tem nada a ver com `vendedores` (que é o cadastro de WhatsApp), mas pode ser vinculado a um vendedor via `vendedor_id` para isolar a visão (sub-login + vendedor_id → só enxerga os próprios orçamentos).
+
+| Coluna | Tipo | Default | Nota |
+|---|---|---|---|
+| `id` | UUID PK | uuid_generate_v4() | |
+| `email` | TEXT UNIQUE NOT NULL | — | Indexado por `lower(email)` |
+| `password_hash` | TEXT NOT NULL | — | bcrypt cost 10 |
+| `nome` | TEXT NOT NULL | — | Exibido no header |
+| `role` | TEXT NOT NULL | 'sub' | CHECK in (admin, sub). Admin tem todas as permissões implicitamente. |
+| `vendedor_id` | UUID FK → vendedores | NULL | Se preenchido + role='sub', dispara o isolamento por vendedor |
+| `permissions` | JSONB NOT NULL | '[]' | Array de strings — ver `api/lib/auth.ts` `PERMISSIONS` |
+| `ativo` | BOOLEAN | true | Desativar = soft-delete |
+| `criado_em` | TIMESTAMP | now() | |
+| `ultimo_login` | TIMESTAMP | NULL | Setado em cada login bem-sucedido |
+| `criado_por` | UUID FK → users | NULL | Quem criou esse usuário (SET NULL on delete) |
+
+Índices:
+- `idx_users_email` (lower(email))
+- `idx_users_vendedor_id` (vendedor_id)
+
+**Bootstrap do admin inicial:** se a tabela está vazia no boot, cria um admin com email/senha de `ADMIN_INITIAL_EMAIL` + `ADMIN_INITIAL_PASSWORD` (env). Senha precisa ter ≥8 chars.
+
+**Permissions disponíveis** (subset, ver fonte para a lista canônica): `products.view`, `products.edit`, `products.import`, `clientes.view`, `clientes.edit`, `clientes.delete`, `orcamentos.view`, `orcamentos.edit`, `vendas.view`, `vendedores.view`, `vendedores.edit`, `historico.view`, `config.view`, `config.edit`, `dashboard.view`, `users.manage`.
+
 ## Shapes JSONB
 
 ### `orcamentos.itens`
@@ -226,4 +251,4 @@ Aguardando escolha de cliente para edição (fora de orçamento):
 
 Documentar aqui ao introduzir nova migration. Hoje vazio — todo o schema está em `initDB()`.
 
-> Fase 1 introduz tabelas `users`, `user_roles`/`user_permissions` para auth do painel + tabela `ai_usage` para tracking de custo. Detalhes virão no PR da Fase 1.
+> **Fase 1c** introduz `ai_usage` para tracking de custo da OpenAI por mensagem. **Fase 3** pode adicionar caching de PDFs gerados se a geração on-the-fly virar gargalo.

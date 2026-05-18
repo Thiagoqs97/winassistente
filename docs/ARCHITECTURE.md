@@ -52,20 +52,25 @@
 ```
 api/
 ├── index.ts              Re-export do app para a Vercel serverless
-├── server.ts             Bootstrap: dotenv, express, cors, middlewares, mount routes
+├── server.ts             Bootstrap: dotenv, express, cors, cookieParser, mount routes
 │
 ├── db/
 │   ├── pool.ts           Pool pg singleton (DATABASE_URL, SSL, max=5)
-│   └── migrations.ts     initDB() e ensureDB() — DDL idempotente
+│   └── migrations.ts     initDB() / ensureDB() / bootstrapAdmin() — DDL idempotente
+│
+├── middleware/
+│   └── auth.ts           requireAuth, requireRole, requirePermission, AuthRequest
 │
 ├── routes/
-│   ├── webhook.ts        POST /api/webhook/evolution
+│   ├── auth.ts           POST /api/auth/login, POST /api/auth/logout, GET /api/auth/me
+│   ├── users.ts          CRUD admin-only de users (login do painel)
+│   ├── webhook.ts        POST /api/webhook/evolution (sem auth — Evolution chama)
 │   ├── products.ts       GET/PUT /api/products[/:id/toggle], POST /api/upload-stock
 │   ├── clientes.ts       CRUD /api/clientes
 │   ├── orcamentos.ts     GET/PATCH /api/orcamentos[/:numero/[fechar|cancelar|reabrir]]
 │   ├── vendedores.ts     GET/PUT /api/vendedores + sessions/mensagens
 │   ├── config.ts         GET/PUT /api/config
-│   └── setup.ts          POST /api/setup-webhook
+│   └── setup.ts          POST /api/setup-webhook (admin only)
 │
 ├── services/
 │   ├── search.ts         searchProducts() + searchClientes() + normalize/keyword extract
@@ -75,13 +80,13 @@ api/
 │   └── media.ts          Transcrição (Whisper), visão (gpt-4o), planilhas (xlsx)
 │
 ├── agents/
-│   ├── core.ts           Pipeline da IA: extract-intent → search → final-response com tools
-│   ├── prompts.ts        finalPrompt builder, extract-intent prompt
+│   ├── prompts.ts        EXTRACT_INTENT_PROMPT + buildFinalPrompt + buildAlteracaoBlock + buildStockContext
 │   └── tools.ts          Definições das functions (finalizar/alterar/cadastrar/editar)
 │
 └── lib/
     ├── logger.ts         Logger estruturado JSON
-    └── errors.ts         Error classes / mapeamento HTTP
+    ├── openai.ts         OpenAI client singleton
+    └── auth.ts           bcrypt hash/verify + JWT sign/verify + PERMISSIONS + hasPermission
 ```
 
 ## Pipeline da mensagem no webhook

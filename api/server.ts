@@ -2,10 +2,13 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 
 import { ensureDB } from './db/migrations.js';
 import { logger } from './lib/logger.js';
 
+import { authRouter } from './routes/auth.js';
+import { usersRouter } from './routes/users.js';
 import { productsRouter } from './routes/products.js';
 import { clientesRouter } from './routes/clientes.js';
 import { orcamentosRouter } from './routes/orcamentos.js';
@@ -17,8 +20,9 @@ import { webhookRouter } from './routes/webhook.js';
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
-app.use(cors());
+app.use(cors({ credentials: true }));
 app.use(express.json({ limit: '50mb' }));
+app.use(cookieParser());
 
 // Middleware: ensure DB ready antes de qualquer request (exceto webhook,
 // que inicializa o próprio DB no handler após responder).
@@ -32,6 +36,10 @@ app.use(async (req, _res, next) => {
   }
 });
 
+// Rotas públicas (login) e rotas com autenticação própria via cookie/JWT.
+// O middleware de auth é aplicado dentro de cada router que precisa.
+app.use('/api', authRouter);
+app.use('/api', usersRouter);
 app.use('/api', productsRouter);
 app.use('/api', clientesRouter);
 app.use('/api', orcamentosRouter);

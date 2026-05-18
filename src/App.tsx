@@ -1,9 +1,69 @@
-import React, { useEffect, useState } from 'react';
-import { PackageOpen, MessageSquare, Settings, Upload, History, FileText, ShoppingBag, Users } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { PackageOpen, MessageSquare, Settings, Upload, History, FileText, ShoppingBag, Users, LogOut } from 'lucide-react';
 import { cn } from './lib/utils';
+import { useAuth } from './auth/AuthContext';
+import { LoginScreen } from './auth/LoginScreen';
+import { hasAnyPermission, type Permission } from './lib/permissions';
+
+type TabKey = 'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas' | 'clientes';
+
+// Cada tab declara as permissões que dão acesso (admin sempre vê tudo).
+const TAB_PERMS: Record<TabKey, Permission[]> = {
+  import: ['products.import'],
+  products: ['products.view'],
+  clientes: ['clientes.view'],
+  history: ['historico.view'],
+  orcamentos: ['orcamentos.view'],
+  vendas: ['vendas.view'],
+  settings: ['config.view'],
+};
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas' | 'clientes'>('import');
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#020617] text-slate-400 flex items-center justify-center">
+        Carregando…
+      </div>
+    );
+  }
+
+  if (!user) return <LoginScreen />;
+
+  return <ProtectedApp />;
+}
+
+function ProtectedApp() {
+  const { user, logout } = useAuth();
+  const u = user!;
+
+  // Determina as tabs visíveis para este usuário e define a inicial.
+  const visibleTabs = useMemo<TabKey[]>(() => {
+    const all: TabKey[] = ['import', 'products', 'clientes', 'history', 'orcamentos', 'vendas', 'settings'];
+    return all.filter(t => hasAnyPermission(u, ...TAB_PERMS[t]));
+  }, [u]);
+
+  const [activeTab, setActiveTab] = useState<TabKey>(() => visibleTabs[0] || 'orcamentos');
+
+  // Se o user perder acesso à tab atual (em refresh), reposiciona.
+  useEffect(() => {
+    if (!visibleTabs.includes(activeTab) && visibleTabs.length > 0) {
+      setActiveTab(visibleTabs[0]);
+    }
+  }, [visibleTabs, activeTab]);
+
+  if (visibleTabs.length === 0) {
+    return (
+      <div className="min-h-screen bg-[#020617] text-slate-200 flex items-center justify-center p-8">
+        <div className="text-center">
+          <p className="text-lg font-medium">Você não tem acesso a nenhuma área.</p>
+          <p className="text-slate-400 mt-2 text-sm">Peça ao administrador para te dar permissão.</p>
+          <button onClick={logout} className="mt-6 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-xl text-sm">Sair</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen bg-[#020617] text-slate-200 font-sans overflow-hidden relative">
@@ -18,10 +78,23 @@ export default function App() {
           </div>
           <span className="text-xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">WIN <span className="font-light">DISTRIBUIDORA</span></span>
         </div>
-        <div className="flex items-center gap-6">
+        <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 border border-green-500/20 rounded-full">
             <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
             <span className="text-xs font-medium text-green-400 uppercase tracking-widest">Sistema Online</span>
+          </div>
+          <div className="flex items-center gap-3 pl-4 border-l border-white/10">
+            <div className="text-right">
+              <p className="text-sm font-medium text-white leading-tight">{u.nome}</p>
+              <p className="text-[10px] uppercase tracking-widest text-slate-500">{u.role === 'admin' ? 'Administrador' : 'Vendedor'}</p>
+            </div>
+            <button
+              onClick={logout}
+              title="Sair"
+              className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 hover:bg-rose-500/20 hover:text-rose-300 border border-white/10 hover:border-rose-500/30 text-slate-400 transition-colors"
+            >
+              <LogOut size={16} />
+            </button>
           </div>
         </div>
       </nav>
@@ -30,13 +103,13 @@ export default function App() {
         <aside className="w-64 border-r border-white/10 backdrop-blur-md bg-white/5 p-6 flex flex-col gap-8">
           <div className="flex flex-col gap-2">
             <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold px-2">Navegação</p>
-            <SidebarItem icon={<Upload size={16} />} label="Importação" active={activeTab === 'import'} onClick={() => setActiveTab('import')} />
-            <SidebarItem icon={<PackageOpen size={16} />} label="Produtos" active={activeTab === 'products'} onClick={() => setActiveTab('products')} />
-            <SidebarItem icon={<Users size={16} />} label="Clientes" active={activeTab === 'clientes'} onClick={() => setActiveTab('clientes')} />
-            <SidebarItem icon={<History size={16} />} label="Histórico" active={activeTab === 'history'} onClick={() => setActiveTab('history')} />
-            <SidebarItem icon={<FileText size={16} />} label="Orçamentos" active={activeTab === 'orcamentos'} onClick={() => setActiveTab('orcamentos')} />
-            <SidebarItem icon={<ShoppingBag size={16} />} label="Vendas" active={activeTab === 'vendas'} onClick={() => setActiveTab('vendas')} />
-            <SidebarItem icon={<Settings size={16} />} label="Configurações" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
+            {visibleTabs.includes('import') && <SidebarItem icon={<Upload size={16} />} label="Importação" active={activeTab === 'import'} onClick={() => setActiveTab('import')} />}
+            {visibleTabs.includes('products') && <SidebarItem icon={<PackageOpen size={16} />} label="Produtos" active={activeTab === 'products'} onClick={() => setActiveTab('products')} />}
+            {visibleTabs.includes('clientes') && <SidebarItem icon={<Users size={16} />} label="Clientes" active={activeTab === 'clientes'} onClick={() => setActiveTab('clientes')} />}
+            {visibleTabs.includes('history') && <SidebarItem icon={<History size={16} />} label="Histórico" active={activeTab === 'history'} onClick={() => setActiveTab('history')} />}
+            {visibleTabs.includes('orcamentos') && <SidebarItem icon={<FileText size={16} />} label="Orçamentos" active={activeTab === 'orcamentos'} onClick={() => setActiveTab('orcamentos')} />}
+            {visibleTabs.includes('vendas') && <SidebarItem icon={<ShoppingBag size={16} />} label="Vendas" active={activeTab === 'vendas'} onClick={() => setActiveTab('vendas')} />}
+            {visibleTabs.includes('settings') && <SidebarItem icon={<Settings size={16} />} label="Configurações" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />}
           </div>
 
           <div className="mt-auto p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-2xl">

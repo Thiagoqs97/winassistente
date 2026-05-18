@@ -149,6 +149,42 @@ A Strategy 3 só sobrescreve as anteriores se trouxer `sml` maior, evitando pior
 
 ---
 
+---
+
+## ADR-010 — JWT em cookie httpOnly para auth do painel
+
+**Status:** aceito
+
+**Contexto:** O painel precisa de autenticação multi-usuário com permissões granulares. Opções avaliadas: (a) JWT em localStorage, (b) JWT em cookie httpOnly, (c) Clerk/Auth0. Localstorage expõe o token a XSS. Provedor externo adiciona dependência e custo. O painel é de uso interno (poucos usuários, controle total).
+
+**Decisão:** JWT assinado com HS256 + secret de 48 bytes em `JWT_SECRET`, guardado em cookie httpOnly `win_auth` (`sameSite: lax`, `secure: true` em prod, 7d de expiração). Validação em `api/middleware/auth.ts` recarrega o `user` do banco a cada request para garantir frescor (permissões/ativo podem ter mudado depois do login).
+
+**Consequências:**
+- Frontend não tem acesso ao token (proteção contra XSS).
+- Pequeno overhead por request (uma query a `users`). Aceitável dado o volume.
+- 401 globalmente captado via patch de `fetch` que dispara o evento `auth-expired` (ver `src/lib/install-fetch.ts`).
+- Em deploy multi-domínio, vai precisar configurar `sameSite: none + secure`. Hoje frontend e API estão no mesmo domínio (`winassistente.vercel.app`).
+
+---
+
+## ADR-011 — Permissões granulares + isolamento por vendedor
+
+**Status:** aceito
+
+**Contexto:** Vendedores logados não devem ver orçamentos/clientes/vendas de outros vendedores. Admin precisa ver tudo. Operacional sem vínculo a vendedor (ex: gerente) pode precisar ver tudo mas só editar parte.
+
+**Decisão:**
+- Roles binários: `admin` (todas as permissões implícitas) ou `sub` (granular via `permissions` array em `users.permissions` JSONB).
+- Vinculação opcional `users.vendedor_id → vendedores.id`. Quando preenchido E role=`sub`, **força isolamento** em todas as queries de `orcamentos`/`vendedores`/`sessoes`/`mensagens`.
+- Filtro de isolamento é aplicado **depois** dos filtros do client (não pode ser bypassado por query param).
+
+**Consequências:**
+- Sub-login sem `vendedor_id` é um "operacional sem isolamento" — usa as permissões para acesso, mas vê o universo todo.
+- Não há "owner" em produtos/clientes/config — isolamento é só por vendedor em entidades que têm `vendedor_id`.
+- Lista canônica de permissões em `api/lib/auth.ts:PERMISSIONS`. Espelhada em `src/lib/permissions.ts`.
+
+---
+
 ## Como adicionar um novo ADR
 
 1. Próximo número sequencial (ADR-010, ADR-011, …).

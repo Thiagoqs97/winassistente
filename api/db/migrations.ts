@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import { pool } from './pool.js';
 import { logger } from '../lib/logger.js';
 
@@ -178,11 +179,34 @@ async function initDB(): Promise<void> {
     await client.query(`ALTER TABLE orcamentos ADD COLUMN IF NOT EXISTS cliente_id UUID REFERENCES clientes(id) ON DELETE SET NULL;`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orcamentos_cliente_id ON orcamentos(cliente_id);`);
 
+    // --- Auth (Fase 1a) ---
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        nome TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'sub' CHECK (role IN ('admin', 'sub')),
+        vendedor_id UUID REFERENCES vendedores(id) ON DELETE SET NULL,
+        permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
+        ativo BOOLEAN DEFAULT true,
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        ultimo_login TIMESTAMP,
+        criado_por UUID REFERENCES users(id) ON DELETE SET NULL
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(lower(email));`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_users_vendedor_id ON users(vendedor_id);`);
+
     await client.query(`
       INSERT INTO system_config (id, core_prompt, session_timeout_hours)
       VALUES ('default', $1, 2)
       ON CONFLICT (id) DO NOTHING;
     `, [DEFAULT_PROMPT]);
+
+    // Bootstrap do admin inicial — só roda se NÃO existe nenhum usuário.
+    // Email e senha vêm de ADMIN_INITIAL_EMAIL / ADMIN_INITIAL_PASSWORD em env.
+    await bootstrapAdmin(client);
 
     logger.info('Database initialized');
   } catch (err) {
@@ -196,4 +220,29 @@ async function initDB(): Promise<void> {
 export function ensureDB(): Promise<void> {
   if (!dbInitPromise) dbInitPromise = initDB();
   return dbInitPromise;
+}
+
+async function bootstrapAdmin(client: import('pg').PoolClient): Promise<void> {
+  const { rows: countRows } = await client.query(`SELECT COUNT(*)::int AS n FROM users`);
+  if (countRows[0].n > 0) return;
+
+  const email = process.env.ADMIN_INITIAL_EMAIL?.trim().toLowerCase();
+  const password = process.env.ADMIN_INITIAL_PASSWORD;
+
+  if (!email || !password) {
+    logger.warn('Bootstrap do admin pulado: defina ADMIN_INITIAL_EMAIL e ADMIN_INITIAL_PASSWORD no .env');
+    return;
+  }
+  if (password.length < 8) {
+    logger.error('ADMIN_INITIAL_PASSWORD precisa ter ao menos 8 caracteres');
+    return;
+  }
+
+  const hash = await bcrypt.hash(password, 10);
+  await client.query(
+    `INSERT INTO users (email, password_hash, nome, role, permissions)
+     VALUES ($1, $2, $3, 'admin', '[]'::jsonb)`,
+    [email, hash, 'Administrador']
+  );
+  logger.info('Admin inicial criado', { email });
 }

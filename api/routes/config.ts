@@ -1,9 +1,12 @@
 import { Router } from 'express';
 import { pool } from '../db/pool.js';
+import { requireAuth, requirePermission } from '../middleware/auth.js';
 
 export const configRouter = Router();
 
-configRouter.get('/config', async (_req, res) => {
+configRouter.use(requireAuth);
+
+configRouter.get('/config', requirePermission('config.view'), async (_req, res) => {
   try {
     const { rows } = await pool.query("SELECT * FROM system_config WHERE id = 'default'");
     res.json(rows[0]);
@@ -12,7 +15,7 @@ configRouter.get('/config', async (_req, res) => {
   }
 });
 
-configRouter.put('/config', async (req, res) => {
+configRouter.put('/config', requirePermission('config.edit'), async (req, res) => {
   const { core_prompt, session_timeout_hours } = req.body;
   try {
     const { rows } = await pool.query(
