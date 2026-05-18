@@ -160,8 +160,12 @@ Total do pedido   1.384,40
 
 > **Variação/sabor**: se `descricao` contém uma string como `SABOR:CHOCOBEAR` ou `300G`, render na segunda linha da célula. O backend hoje guarda variação no próprio `descricao` (não há coluna separada `variacao`).
 
-## Implementação prevista (Fase 3)
+## Implementação (Fase 3.2) ✅
 
-Biblioteca a escolher: **PDFKit** (gerador nativo, mais flexível) ou **@react-pdf/renderer** (declarativo, JSX). Decisão na hora de implementar — anotar aqui o que foi escolhido e por quê.
-
-Saída: `Buffer` retornado por `/api/orcamentos/:numero/pdf` (GET) ou enviado como anexo via Evolution (`documentMessage` com base64).
+- **Lib escolhida:** **PDFKit** (`pdfkit` + `@types/pdfkit`). Decisão e trade-offs em `docs/DECISIONS.md` (ADR-013).
+- **Serviço:** `api/services/pdf.ts` — funções `generateOrcamentoPDF(numero, { vendedorIdScope })` (faz o SELECT) e `renderOrcamentoPDF(orc, cliente)` (puro, testado).
+- **Endpoint:** `GET /api/orcamentos/:numero/pdf` — `requirePermission('orcamentos.view', 'vendas.view')`, isolamento por vendedor consistente com outras rotas. Response com `Content-Type: application/pdf` e `Content-Disposition: inline; filename="ORC-NNNNNN.pdf"`.
+- **Frontend:** botão "📄 Baixar PDF" no detalhe do orçamento (aba Vendas), abre em nova aba.
+- **Testes:** `tests/pdf.test.ts` cobrem o caso completo, sem cliente vinculado e com itens vazios.
+- **Logo:** desenhado em runtime no PDF (retângulo arredondado azul `#1a3a8a` com texto "WIN / DISTRIBUIDORA"). Trocar por imagem oficial quando o asset chegar — basta `doc.image(...)` na mesma posição.
+- **Fase 4 (item 5.1):** o mesmo `Buffer` será enviado pelo WhatsApp como `documentMessage` em base64, sem nova dependência.

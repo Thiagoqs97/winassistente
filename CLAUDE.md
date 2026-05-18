@@ -55,6 +55,8 @@ Variáveis em `.env` (modelo em `.env.example`):
 | Webhook do Evolution (pipeline principal) | `api/routes/webhook.ts` |
 | REST do painel | `api/routes/{products,clientes,orcamentos,vendedores,config,setup}.ts` |
 | Endpoints do dashboard BI (Fase 2) | `api/routes/dashboard.ts` + `api/services/dashboard.ts` |
+| Histórico do cliente (Fase 3.1) | `GET /api/clientes/:id/historico` em `api/routes/clientes.ts` |
+| Gerador de PDF do orçamento (Fase 3.2) | `api/services/pdf.ts` (PDFKit) + endpoint `GET /api/orcamentos/:numero/pdf` |
 | Helper de período (de/ate, default mês atual) | `api/lib/period.ts` |
 | OpenAI client singleton | `api/lib/openai.ts` |
 | Wrapper de chat completion + tracking de custo em `ai_usage` | `api/lib/ai.ts` |
@@ -107,6 +109,7 @@ Variáveis em `.env` (modelo em `.env.example`):
 - **`acao_pendente` em `sessoes`** (JSONB): guarda o estado de uma confirmação em curso (fechar venda, cancelar, escolher cliente entre múltiplos matches, escolher cliente p/ edição). É consumido na próxima mensagem do vendedor e limpo. Ver `docs/FLOWS.md`.
 - **Onboarding bloqueia o vendedor até informar o nome**. Toda a triagem só corre quando `vendedores.nome IS NOT NULL`. O parser `parseNomeVendedor` é estrito: rejeita números, frases longas, palavras com dígito.
 - **`remoteJidAlt` é preferido ao `remoteJid`** quando termina em `@s.whatsapp.net` — algumas contas Business vêm com `@lid` no remoteJid e o número real no alt.
+- **Rodapé do PDF fica acima de `page.height - margins.bottom`**, não em `page.height - 30`. Caso contrário, o `LineWrapper` do PDFKit cria página adicional ao escrever lá (mesmo com `lineBreak: false`). Ver `api/services/pdf.ts`.
 
 ## Custos e modelos de IA
 
@@ -148,7 +151,7 @@ Substituição planejada do extrator para um modelo menor está no roadmap (não
 - **Fase 0** ✅: documentação, modularização, logger, testes, limpeza.
 - **Fase 1** ✅: auth no painel (admin + sub-logins com permissões granulares) + tracking de custo de IA.
 - **Fase 2** ✅: dashboard BI completo (faturamento, ranking vendedores, top produtos, clientes, funil, custo IA).
-- **Fase 3**: histórico de compras do cliente (endpoint + base) + geração de PDF do orçamento.
+- **Fase 3** ✅: histórico de compras do cliente (endpoint + modal no painel) + geração de PDF do orçamento (PDFKit + endpoint + download no painel).
 - **Fase 4**: UX no WhatsApp (`/ajuda`, `/status`, `/historico cliente`, PDF anexo, alerta de mudança de preço).
 
 Detalhes e dependências em `docs/ROADMAP.md` (criado junto com o PRD v3.0).

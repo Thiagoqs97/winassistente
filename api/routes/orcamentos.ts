@@ -2,6 +2,7 @@ import { Router, type Response } from 'express';
 import { pool } from '../db/pool.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth, requirePermission, type AuthRequest } from '../middleware/auth.js';
+import { generateOrcamentoPDF } from '../services/pdf.js';
 
 export const orcamentosRouter = Router();
 
@@ -106,3 +107,20 @@ async function patchStatus(req: AuthRequest, res: Response, novoStatus: 'venda' 
 orcamentosRouter.patch('/orcamentos/:numero/cancelar', requirePermission('orcamentos.edit'), (req: AuthRequest, res) => patchStatus(req, res, 'cancelado'));
 orcamentosRouter.patch('/orcamentos/:numero/fechar', requirePermission('orcamentos.edit'), (req: AuthRequest, res) => patchStatus(req, res, 'venda'));
 orcamentosRouter.patch('/orcamentos/:numero/reabrir', requirePermission('orcamentos.edit'), (req: AuthRequest, res) => patchStatus(req, res, 'aberto'));
+
+// PDF do orçamento (Fase 3.2). Respeita o mesmo isolamento por vendedor.
+orcamentosRouter.get('/orcamentos/:numero/pdf', requirePermission('orcamentos.view', 'vendas.view'), async (req: AuthRequest, res) => {
+  try {
+    const u = req.user!;
+    const scope = u.role === 'sub' && u.vendedor_id ? u.vendedor_id : undefined;
+    const buf = await generateOrcamentoPDF(req.params.numero, { vendedorIdScope: scope });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${req.params.numero}.pdf"`);
+    res.setHeader('Content-Length', buf.length.toString());
+    res.send(buf);
+  } catch (err: any) {
+    if (err?.code === 'NOT_FOUND') return res.status(404).json({ error: 'Orçamento não encontrado' });
+    logger.error('GET /api/orcamentos/:numero/pdf error', { err: err?.message, stack: err?.stack });
+    res.status(500).json({ error: 'Erro ao gerar PDF' });
+  }
+});

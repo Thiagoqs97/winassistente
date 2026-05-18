@@ -605,6 +605,12 @@ function OrcamentosTab({ mode = 'orcamentos' }: { mode?: 'orcamentos' | 'vendas'
                   <span className="text-lg font-bold text-white">R$ {fmtBR(selected.total)}</span>
                 </div>
                 <div className="space-y-2">
+                  <a
+                    href={`/api/orcamentos/${selected.numero}/pdf`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block w-full px-4 py-2 bg-indigo-500/10 border border-indigo-500/30 hover:bg-indigo-500/20 text-indigo-200 text-sm rounded-xl transition-colors text-center"
+                  >📄 Baixar PDF</a>
                   {selected.status === 'aberto' && (
                     <>
                       <button onClick={() => mudarStatus(selected.numero, 'fechar')} className="w-full px-4 py-2 bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 text-emerald-300 text-sm rounded-xl transition-colors">✅ Marcar como venda</button>
@@ -640,6 +646,30 @@ function ClientesTab() {
   const [form, setForm] = useState<any>(empty);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const [historico, setHistorico] = useState<any | null>(null);
+  const [histLoading, setHistLoading] = useState(false);
+
+  const fmt2 = (n: any) => Number(n ?? 0).toFixed(2).replace('.', ',');
+  const histStatusBadge = (s: string) => {
+    if (s === 'venda') return 'bg-emerald-500/20 text-emerald-300';
+    if (s === 'cancelado') return 'bg-rose-500/20 text-rose-300';
+    return 'bg-amber-500/20 text-amber-300';
+  };
+
+  const openHistorico = async (c: any) => {
+    setHistorico({ cliente: c, agregados: null, orcamentos: [] });
+    setHistLoading(true);
+    try {
+      const res = await fetch(`/api/clientes/${c.id}/historico?limit=50`);
+      const data = await res.json();
+      if (res.ok) setHistorico(data);
+      else setHistorico({ cliente: c, error: data.error || 'Erro ao carregar', agregados: null, orcamentos: [] });
+    } catch (e: any) {
+      setHistorico({ cliente: c, error: e.message, agregados: null, orcamentos: [] });
+    } finally {
+      setHistLoading(false);
+    }
+  };
 
   const load = async (query = '') => {
     setLoading(true);
@@ -776,6 +806,7 @@ function ClientesTab() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right space-x-2">
+                    <button onClick={() => openHistorico(c)} className="px-2.5 py-1 text-xs rounded-md bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">Histórico</button>
                     <button onClick={() => openEdit(c.id)} className="px-2.5 py-1 text-xs rounded-md bg-white/10 hover:bg-white/20 text-white">Editar</button>
                     {c.ativo && <button onClick={() => desativar(c.id)} className="px-2.5 py-1 text-xs rounded-md bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30">Desativar</button>}
                   </td>
@@ -785,6 +816,93 @@ function ClientesTab() {
           </table>
         </div>
       </div>
+
+      {historico && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm" onClick={() => setHistorico(null)}>
+          <div className="bg-slate-900 border border-white/10 rounded-3xl max-w-4xl w-full max-h-[85vh] overflow-auto p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <h3 className="text-2xl font-bold text-white">Histórico do cliente</h3>
+                <p className="text-slate-300 mt-1">{historico.cliente?.nome}</p>
+                {historico.cliente?.fantasia && historico.cliente.fantasia.toLowerCase() !== String(historico.cliente.nome).toLowerCase() && (
+                  <p className="text-xs text-slate-500">{historico.cliente.fantasia}</p>
+                )}
+              </div>
+              <button onClick={() => setHistorico(null)} className="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+            </div>
+
+            {histLoading ? (
+              <p className="text-slate-500 text-sm py-8 text-center">Carregando...</p>
+            ) : historico.error ? (
+              <p className="text-rose-300 text-sm py-8 text-center">{historico.error}</p>
+            ) : (
+              <>
+                {historico.agregados && (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+                    <div className="rounded-xl bg-white/5 border border-white/10 p-3">
+                      <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Vendas</p>
+                      <p className="text-xl font-bold text-emerald-300 mt-1">{historico.agregados.total_vendas}</p>
+                      <p className="text-[10px] text-slate-500">R$ {fmt2(historico.agregados.valor_vendas)}</p>
+                    </div>
+                    <div className="rounded-xl bg-white/5 border border-white/10 p-3">
+                      <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Orçamentos</p>
+                      <p className="text-xl font-bold text-amber-300 mt-1">{historico.agregados.total_abertos}</p>
+                      <p className="text-[10px] text-slate-500">abertos</p>
+                    </div>
+                    <div className="rounded-xl bg-white/5 border border-white/10 p-3">
+                      <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Cancelados</p>
+                      <p className="text-xl font-bold text-rose-300 mt-1">{historico.agregados.total_cancelados}</p>
+                      <p className="text-[10px] text-slate-500">total</p>
+                    </div>
+                    <div className="rounded-xl bg-white/5 border border-white/10 p-3">
+                      <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Última venda</p>
+                      <p className="text-sm font-bold text-white mt-1">
+                        {historico.agregados.ultima_venda ? new Date(historico.agregados.ultima_venda).toLocaleDateString('pt-BR') : '—'}
+                      </p>
+                      <p className="text-[10px] text-slate-500">
+                        {historico.agregados.ultimo_orcamento ? `últ. orç. ${new Date(historico.agregados.ultimo_orcamento).toLocaleDateString('pt-BR')}` : ''}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {historico.orcamentos.length === 0 ? (
+                  <p className="text-slate-500 text-sm py-8 text-center">Sem orçamentos para este cliente.</p>
+                ) : (
+                  <div className="rounded-2xl bg-white/5 border border-white/10 overflow-hidden">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-slate-950/60 text-[10px] uppercase text-slate-500">
+                        <tr>
+                          <th className="px-3 py-2 font-bold">Número</th>
+                          <th className="px-3 py-2 font-bold">Data</th>
+                          <th className="px-3 py-2 font-bold">Vendedor</th>
+                          <th className="px-3 py-2 font-bold text-right">Itens</th>
+                          <th className="px-3 py-2 font-bold text-right">Total</th>
+                          <th className="px-3 py-2 font-bold text-center">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {historico.orcamentos.map((o: any) => (
+                          <tr key={o.id} className="border-t border-white/5">
+                            <td className="px-3 py-2 font-mono text-xs text-indigo-300">{o.numero}</td>
+                            <td className="px-3 py-2 text-xs text-slate-400">{new Date(o.criado_em).toLocaleString('pt-BR')}</td>
+                            <td className="px-3 py-2 text-xs text-slate-300">{o.vendedor_nome || o.vendedor_whatsapp || '—'}</td>
+                            <td className="px-3 py-2 text-xs text-slate-400 text-right">{o.qtd_itens}</td>
+                            <td className="px-3 py-2 text-xs text-white text-right font-medium">R$ {fmt2(o.total)}</td>
+                            <td className="px-3 py-2 text-center">
+                              <span className={cn('text-[10px] font-bold px-2 py-0.5 rounded', histStatusBadge(o.status))}>{o.status}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
 
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm" onClick={() => setShowForm(false)}>

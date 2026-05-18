@@ -67,21 +67,22 @@ Entregáveis (cards e visualizações):
 
 Endpoints `/api/dashboard/{kpis,ranking-vendedores,top-produtos,clientes,funil,custo-ia}` em `api/routes/dashboard.ts` + agregadores em `api/services/dashboard.ts`. Período via `?de=&ate=` (default mês atual) resolvido em `api/lib/period.ts`. Isolamento por vendedor consistente com orçamentos. Testes em `tests/dashboard.test.ts` cobrem o helper de período e a montagem da curva ABC.
 
-## Fase 3 — Histórico de cliente + PDF
+## Fase 3 — Histórico de cliente + PDF ✅ CONCLUÍDA
 
 **Objetivo:** habilitar consulta de histórico do cliente e gerar o PDF nativo seguindo o template do Bling.
 
 Dependências: Fase 2 (não estrita, mas reusa parte das queries).
 
-### 3.1 — Histórico do cliente
-- `GET /api/clientes/:id/historico` → últimos N orçamentos (status, total, data, itens).
-- Tela "Detalhe do cliente" no painel com a timeline.
+### 3.1 — Histórico do cliente ✅
+- [x] `GET /api/clientes/:id/historico?limit=N` → últimos N orçamentos (id, número, status, total, datas, qtd_itens, vendedor) + agregados (total_vendas, total_abertos, total_cancelados, valor_vendas, ultima_venda, ultimo_orcamento). Respeita isolamento por vendedor.
+- [x] Modal "Histórico do cliente" na aba Clientes (botão por linha), com cards de agregados + tabela cronológica.
 
-### 3.2 — PDF do orçamento
-- Lib: PDFKit ou `@react-pdf/renderer` (decidir no momento).
-- Layout em `docs/PDF_ORCAMENTO.md` — espelha o modelo Bling.
-- `GET /api/orcamentos/:numero/pdf` retorna `Buffer`.
-- Download no painel.
+### 3.2 — PDF do orçamento ✅
+- [x] Lib escolhida: **PDFKit** (ver `docs/DECISIONS.md` — ADR sobre PDF).
+- [x] Layout em `docs/PDF_ORCAMENTO.md`, espelhando o modelo Bling. Logo retangular azul com "WIN DISTRIBUIDORA", cabeçalho com dados WIN à direita, bloco Cliente + Número/Data, Vendedor, tabela de itens com colunas (Descrição, Código, Un., Qtd., Valor unit., Valor total), totais (N° de itens, Soma das Qtdes, Total de produtos, Total do pedido), área Observações, rodapé com paginação.
+- [x] `GET /api/orcamentos/:numero/pdf` retorna o arquivo. Mesmo isolamento por vendedor das outras rotas de orçamentos.
+- [x] Botão "📄 Baixar PDF" no painel (aba Vendas → Detalhe).
+- [x] Tests `tests/pdf.test.ts` cobrem geração com cliente, sem cliente e com lista vazia.
 - (Fase 4) Envio automático pelo WhatsApp ao gerar/alterar orçamento.
 
 ## Fase 4 — UX no WhatsApp

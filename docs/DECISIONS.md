@@ -207,6 +207,29 @@ A Strategy 3 só sobrescreve as anteriores se trouxer `sml` maior, evitando pior
 
 ---
 
+## ADR-013 — PDFKit (imperativo) para gerar o PDF do orçamento
+
+**Status:** aceito
+
+**Contexto:** A Fase 3.2 entrega o PDF do orçamento seguindo o template descrito em `docs/PDF_ORCAMENTO.md` (cabeçalho com dados WIN, bloco Cliente + Número/Data, tabela de itens, totais, observações, rodapé). O PDF é retornado por `GET /api/orcamentos/:numero/pdf` e, na Fase 4, vai ser anexado pelo WhatsApp via `documentMessage`. Backend roda Node serverless na Vercel, então a lib precisa ser leve, sem dependência de Chromium e sem build-step extra.
+
+**Decisão:**
+- **PDFKit** (`pdfkit` + `@types/pdfkit`). Imperativo, gera direto pra `Buffer`, ~600KB instalado, zero dependência nativa, roda fora-da-caixa em Vercel Functions.
+- Layout em `api/services/pdf.ts` com posicionamento absoluto (x,y) para casar com o modelo do Bling/Tiny — fontes nativas Helvetica/Helvetica-Bold pra evitar arquivo pesado.
+- Função pública `generateOrcamentoPDF(numero, { vendedorIdScope? })` faz o SELECT no banco e delega para `renderOrcamentoPDF(orc, cliente)`, que é puro (testado em `tests/pdf.test.ts` sem tocar Postgres).
+- Logo: retângulo arredondado azul-escuro (`#1a3a8a`) com texto "WIN / DISTRIBUIDORA" desenhado no próprio PDF — adia adoção de imagem PNG/SVG até existir asset oficial.
+- Dados da WIN (razão, CNPJ, IE, endereço) ficam em const dentro do arquivo. Mover para `system_config` é trivial no futuro.
+
+**Consequências:**
+- **Não usar `@react-pdf/renderer`**: bundle ~5x maior, reconciler do React no servidor desperdiça memória nos Functions, e o layout do template é fixo o suficiente que JSX declarativo não traz ganho relevante.
+- **Não usar Puppeteer/Chromium**: estoura o limite de bundle da Vercel Function e exige `@sparticuz/chromium`. Overkill pra um documento de 1 página com fontes padrão.
+- **Posicionamento absoluto exige cuidado com `page.height - margins.bottom`**: o `LineWrapper` do PDFKit ainda dispara auto-page-break para texto desenhado abaixo desse limite, mesmo com `lineBreak: false`. O rodapé fica em `page.height - margins.bottom - 12`. Está documentado em `CLAUDE.md` na seção "Coisas que parecem bugs".
+- Multi-página funciona via `bufferPages: true` + `switchToPage()`; total de páginas só é conhecido depois de desenhar o conteúdo, então o rodapé é aplicado num segundo passe.
+
+**Evolução planejada:** quando a Fase 4 (anexo via WhatsApp) chegar, o mesmo Buffer vai ser enviado como `documentMessage` base64 — sem nova dependência. Logo em PNG/SVG entra quando o time da WIN entregar o asset oficial; basta `doc.image()`.
+
+---
+
 ## Como adicionar um novo ADR
 
 1. Próximo número sequencial (ADR-010, ADR-011, …).
