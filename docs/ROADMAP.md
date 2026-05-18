@@ -49,23 +49,23 @@ Dependências: Fase 0 (modularização).
 - [x] Aplicado em todas as chat completions: extractor + final (`gpt-4.1`) no webhook e vision (`gpt-4o`) no parser de imagem. Whisper fica fora — a API não retorna `usage`.
 - [x] Habilita o card "Custo do mês" do dashboard (Fase 2) e relatórios por vendedor/modelo.
 
-## Fase 2 — Dashboard BI
+## Fase 2 — Dashboard BI ✅ CONCLUÍDA
 
 **Objetivo:** todas as visões executivas (`Grupo 1` do escopo aprovado).
 
 Dependências: Fase 1 (`vendedor_id` no usuário pra filtrar; `ai_usage` para o card de custo).
 
-Tela nova: **Dashboard** (rota raiz `/` ou aba "Visão geral").
+Tela nova: **Dashboard** — primeira aba da sidebar, permissão `dashboard.view`.
 
 Entregáveis (cards e visualizações):
-- **1.1** KPIs do mês: faturamento (Σ total de orçamentos com status=`venda`), ticket médio, conversão (`venda` / `aberto+venda+cancelado`), nº de orçamentos.
-- **1.2** Ranking de vendedores: tabela ordenável por faturamento, ticket médio, conversão, tempo médio de fechamento.
-- **1.3** Top produtos: mais vendidos (Σ qtd em itens de venda), mais cotados sem venda (em orçamentos `cancelado`), encalhados (sem aparição em N dias).
-- **1.4** Análise de clientes: top compradores, inativos (>60 dias), curva ABC.
-- **1.5** Funil: mensagens → orçamentos → vendas (com taxas de queda).
-- **1.6** Custo de IA: card "tokens consumidos" + "custo estimado mês" + breakdown por modelo.
+- [x] **1.1** KPIs do mês: faturamento (Σ total de orçamentos com status=`venda`), ticket médio, conversão (`venda` / total), nº de orçamentos com breakdown por status (aberto/cancelado).
+- [x] **1.2** Ranking de vendedores: tabela com faturamento, vendas/total, ticket médio, conversão, tempo médio de fechamento.
+- [x] **1.3** Top produtos: mais vendidos (Σ qtd em itens de venda), mais cotados sem venda (status='cancelado'), encalhados (sem aparição em 90 dias).
+- [x] **1.4** Análise de clientes: top compradores, inativos (>60 dias, sinal absoluto), curva ABC 80/15/5.
+- [x] **1.5** Funil: mensagens → orçamentos → vendas + taxas de queda Msg→Orç e Orç→Venda.
+- [x] **1.6** Custo de IA: total tokens/USD/calls + breakdown por modelo e por purpose (e por vendedor no endpoint, omitido na UI atual).
 
-Endpoints novos: `/api/dashboard/*` agregadores (sem N+1).
+Endpoints `/api/dashboard/{kpis,ranking-vendedores,top-produtos,clientes,funil,custo-ia}` em `api/routes/dashboard.ts` + agregadores em `api/services/dashboard.ts`. Período via `?de=&ate=` (default mês atual) resolvido em `api/lib/period.ts`. Isolamento por vendedor consistente com orçamentos. Testes em `tests/dashboard.test.ts` cobrem o helper de período e a montagem da curva ABC.
 
 ## Fase 3 — Histórico de cliente + PDF
 

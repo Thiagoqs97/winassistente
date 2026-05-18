@@ -185,6 +185,28 @@ A Strategy 3 só sobrescreve as anteriores se trouxer `sml` maior, evitando pior
 
 ---
 
+## ADR-012 — Dashboard agregando direto do Postgres (sem materialized views)
+
+**Status:** aceito
+
+**Contexto:** A Fase 2 entrega 6 grupos de cards (KPIs, ranking, top produtos, clientes, funil, custo IA) com filtro de período. Volume hoje é baixo (centenas de orçamentos/mês), índices já existem para os filtros principais (`idx_orcamentos_vendedor_status`, `idx_ai_usage_*`). Materialized views ou snapshots agendados melhorariam tempo de resposta mas trariam complexidade: lag de dados, jobs de refresh, novo schema a manter.
+
+**Decisão:**
+- Cada endpoint do dashboard executa queries diretas com `GROUP BY` / `FILTER (WHERE …)` / `COUNT(*) FILTER (…)` sobre as tabelas operacionais.
+- Top produtos usa `LATERAL jsonb_array_elements(orcamentos.itens)` — não há FK pra `products` dentro do JSON, agrupa por `(descricao, marca)` (snapshot do item).
+- Cálculos compostos derivados em JS no service (ticket médio, conversão, curva ABC). ABC é puro — testado em `tests/dashboard.test.ts`.
+- Período via helper `api/lib/period.ts` (`resolveRange`): aceita `?de=&ate=` (YYYY-MM-DD, inclusivos), default mês atual, devolve `ate` right-open pra comparações `< $2`.
+- Isolamento por vendedor mantém o mesmo padrão dos demais routers: sub-login com `vendedor_id` → filtro forçado no SQL, parâmetro adicionado depois dos filtros do client.
+
+**Consequências:**
+- Latência aceitável enquanto volume não explodir. Quando passar disso, primeiro candidato a virar MV é a curva ABC (varre todo o histórico de vendas a cada request).
+- Endpoints separados → fácil cachear individualmente no futuro (Vercel `revalidate` ou KV) sem ter que invalidar tudo.
+- Custos de IA aparecem por vendedor no payload mas a UI atual mostra só agregados (modelo / purpose). Tem espaço pra crescer sem nova rota.
+
+**Evolução planejada:** caching com tag-based invalidation se latência incomodar (`revalidateTag('dashboard')` no momento que orçamento muda status). Mover encalhados/inativos pra MV se o `jsonb_array_elements` virar gargalo no plan.
+
+---
+
 ## Como adicionar um novo ADR
 
 1. Próximo número sequencial (ADR-010, ADR-011, …).

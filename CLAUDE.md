@@ -54,6 +54,8 @@ Variáveis em `.env` (modelo em `.env.example`):
 | Definições de tools (function calling) | `api/agents/tools.ts` |
 | Webhook do Evolution (pipeline principal) | `api/routes/webhook.ts` |
 | REST do painel | `api/routes/{products,clientes,orcamentos,vendedores,config,setup}.ts` |
+| Endpoints do dashboard BI (Fase 2) | `api/routes/dashboard.ts` + `api/services/dashboard.ts` |
+| Helper de período (de/ate, default mês atual) | `api/lib/period.ts` |
 | OpenAI client singleton | `api/lib/openai.ts` |
 | Wrapper de chat completion + tracking de custo em `ai_usage` | `api/lib/ai.ts` |
 | Logger estruturado | `api/lib/logger.ts` |
@@ -128,11 +130,24 @@ Substituição planejada do extrator para um modelo menor está no roadmap (não
 | CSV (`documentMessage`) | base64 | Decode UTF-8 (até 4000 chars) → string |
 | PDF | (ainda não implementado, declarado em `tipo_midia` mas não processado) | — |
 
+## Dashboard BI (Fase 2)
+
+- Tab **Dashboard** no painel (primeira da sidebar). Permissão: `dashboard.view`.
+- Sub-login com `vendedor_id` vê só os próprios números (mesmo isolamento de orçamentos). Admin e sub sem vínculo veem tudo.
+- Filtro de período via query string `?de=YYYY-MM-DD&ate=YYYY-MM-DD` (default: mês atual). `ate` é inclusivo no input; o helper devolve right-open (`ate` exclusivo) pra comparações `< $2`.
+- Endpoints, todos sob `requirePermission('dashboard.view')`:
+  - `GET /api/dashboard/kpis` — faturamento, ticket médio, conversão, # orçamentos (por status).
+  - `GET /api/dashboard/ranking-vendedores` — top 50 ordenado por faturamento; inclui tempo médio entre `criado_em` e `atualizado_em` quando status='venda'.
+  - `GET /api/dashboard/top-produtos` — mais vendidos, cotados sem venda (status='cancelado'), encalhados (produtos ativos sem aparição em orçamentos nos últimos 90 dias). Agrega via `jsonb_array_elements(orcamentos.itens)` por `(descricao, marca)` — não há FK pra `products` dentro do JSON.
+  - `GET /api/dashboard/clientes` — top compradores no período, inativos (sem venda há >60 dias, sinal absoluto não-relativo ao filtro), curva ABC (80/15/5).
+  - `GET /api/dashboard/funil` — mensagens recebidas → orçamentos → vendas + taxas.
+  - `GET /api/dashboard/custo-ia` — total tokens/USD/calls, breakdown por modelo, por purpose e top 20 por vendedor (lendo `ai_usage`).
+
 ## Roadmap aprovado (resumo)
 
-- **Fase 0** (atual): documentação, modularização, logger, testes, limpeza.
-- **Fase 1**: auth no painel (admin + sub-logins com permissões granulares) + tracking de custo de IA.
-- **Fase 2**: dashboard BI completo (faturamento, ranking vendedores, top produtos, clientes, funil, custo IA).
+- **Fase 0** ✅: documentação, modularização, logger, testes, limpeza.
+- **Fase 1** ✅: auth no painel (admin + sub-logins com permissões granulares) + tracking de custo de IA.
+- **Fase 2** ✅: dashboard BI completo (faturamento, ranking vendedores, top produtos, clientes, funil, custo IA).
 - **Fase 3**: histórico de compras do cliente (endpoint + base) + geração de PDF do orçamento.
 - **Fase 4**: UX no WhatsApp (`/ajuda`, `/status`, `/historico cliente`, PDF anexo, alerta de mudança de preço).
 

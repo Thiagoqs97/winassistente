@@ -15,6 +15,7 @@ import { orcamentosRouter } from './routes/orcamentos.js';
 import { vendedoresRouter } from './routes/vendedores.js';
 import { configRouter } from './routes/config.js';
 import { setupRouter } from './routes/setup.js';
+import { dashboardRouter } from './routes/dashboard.js';
 import { webhookRouter } from './routes/webhook.js';
 
 const app = express();
@@ -46,6 +47,7 @@ app.use('/api', orcamentosRouter);
 app.use('/api', vendedoresRouter);
 app.use('/api', configRouter);
 app.use('/api', setupRouter);
+app.use('/api', dashboardRouter);
 app.use('/api', webhookRouter);
 
 export async function startServer() {

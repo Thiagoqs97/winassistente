@@ -1,15 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { PackageOpen, MessageSquare, Settings, Upload, History, FileText, ShoppingBag, Users, UserCog, LogOut } from 'lucide-react';
+import { PackageOpen, MessageSquare, Settings, Upload, History, FileText, ShoppingBag, Users, UserCog, LogOut, LayoutDashboard, TrendingUp, TrendingDown, DollarSign, Target, Receipt, AlertTriangle, Sparkles } from 'lucide-react';
 import { cn } from './lib/utils';
 import { useAuth } from './auth/AuthContext';
 import { LoginScreen } from './auth/LoginScreen';
 import { hasAnyPermission, PERMISSION_LABELS, PERMISSIONS, type Permission } from './lib/permissions';
 
-type TabKey = 'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas' | 'clientes' | 'users';
+type TabKey = 'dashboard' | 'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas' | 'clientes' | 'users';
 
 // Cada tab declara as permissões que dão acesso (admin sempre vê tudo).
 // 'users' é admin-only — a checagem real é feita pelo role, não pela permissão.
 const TAB_PERMS: Record<TabKey, Permission[]> = {
+  dashboard: ['dashboard.view'],
   import: ['products.import'],
   products: ['products.view'],
   clientes: ['clientes.view'],
@@ -42,7 +43,7 @@ function ProtectedApp() {
 
   // Determina as tabs visíveis para este usuário e define a inicial.
   const visibleTabs = useMemo<TabKey[]>(() => {
-    const all: TabKey[] = ['import', 'products', 'clientes', 'history', 'orcamentos', 'vendas', 'settings', 'users'];
+    const all: TabKey[] = ['dashboard', 'import', 'products', 'clientes', 'history', 'orcamentos', 'vendas', 'settings', 'users'];
     return all.filter(t => {
       if (t === 'users') return u.role === 'admin';
       return hasAnyPermission(u, ...TAB_PERMS[t]);
@@ -108,6 +109,7 @@ function ProtectedApp() {
         <aside className="w-64 border-r border-white/10 backdrop-blur-md bg-white/5 p-6 flex flex-col gap-8">
           <div className="flex flex-col gap-2">
             <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold px-2">Navegação</p>
+            {visibleTabs.includes('dashboard') && <SidebarItem icon={<LayoutDashboard size={16} />} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />}
             {visibleTabs.includes('import') && <SidebarItem icon={<Upload size={16} />} label="Importação" active={activeTab === 'import'} onClick={() => setActiveTab('import')} />}
             {visibleTabs.includes('products') && <SidebarItem icon={<PackageOpen size={16} />} label="Produtos" active={activeTab === 'products'} onClick={() => setActiveTab('products')} />}
             {visibleTabs.includes('clientes') && <SidebarItem icon={<Users size={16} />} label="Clientes" active={activeTab === 'clientes'} onClick={() => setActiveTab('clientes')} />}
@@ -126,6 +128,7 @@ function ProtectedApp() {
 
         <main className="flex-1 overflow-auto p-8 flex flex-col gap-8">
           <div className="max-w-5xl mx-auto w-full">
+            {activeTab === 'dashboard' && <DashboardTab />}
             {activeTab === 'import' && <ImportTab />}
             {activeTab === 'products' && <ProductsTab />}
             {activeTab === 'clientes' && <ClientesTab />}
@@ -1356,6 +1359,361 @@ function UserFormModal({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// --- DASHBOARD (Fase 2) ---
+
+type PeriodPreset = 'hoje' | '7d' | 'mes' | '30d';
+
+function toIsoDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function computePresetRange(preset: PeriodPreset): { de: string; ate: string } {
+  const now = new Date();
+  if (preset === 'hoje') return { de: toIsoDate(now), ate: toIsoDate(now) };
+  if (preset === '7d') {
+    const d = new Date(now); d.setDate(d.getDate() - 6);
+    return { de: toIsoDate(d), ate: toIsoDate(now) };
+  }
+  if (preset === '30d') {
+    const d = new Date(now); d.setDate(d.getDate() - 29);
+    return { de: toIsoDate(d), ate: toIsoDate(now) };
+  }
+  // 'mes' — primeiro dia do mês até hoje
+  const first = new Date(now.getFullYear(), now.getMonth(), 1);
+  return { de: toIsoDate(first), ate: toIsoDate(now) };
+}
+
+const fmtBRL = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 2 });
+const fmtNum = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 0 });
+const fmtUSD = (v: number) => v.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 4 });
+const fmtPct = (v: number, digits = 1) => `${(v * 100).toFixed(digits)}%`;
+
+function DashboardTab() {
+  const [preset, setPreset] = useState<PeriodPreset>('mes');
+  const [customDe, setCustomDe] = useState<string>('');
+  const [customAte, setCustomAte] = useState<string>('');
+  const [useCustom, setUseCustom] = useState(false);
+
+  const range = useMemo(() => {
+    if (useCustom && customDe && customAte) return { de: customDe, ate: customAte };
+    return computePresetRange(preset);
+  }, [preset, useCustom, customDe, customAte]);
+
+  const [kpis, setKpis] = useState<any | null>(null);
+  const [funil, setFunil] = useState<any | null>(null);
+  const [custo, setCusto] = useState<any | null>(null);
+  const [ranking, setRanking] = useState<any | null>(null);
+  const [produtos, setProdutos] = useState<any | null>(null);
+  const [clientes, setClientes] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    const qs = `?de=${range.de}&ate=${range.ate}`;
+    Promise.all([
+      fetch(`/api/dashboard/kpis${qs}`).then(r => r.json()),
+      fetch(`/api/dashboard/funil${qs}`).then(r => r.json()),
+      fetch(`/api/dashboard/custo-ia${qs}`).then(r => r.json()),
+      fetch(`/api/dashboard/ranking-vendedores${qs}`).then(r => r.json()),
+      fetch(`/api/dashboard/top-produtos${qs}`).then(r => r.json()),
+      fetch(`/api/dashboard/clientes${qs}`).then(r => r.json()),
+    ]).then(([k, f, c, r, p, cl]) => {
+      if (cancelled) return;
+      setKpis(k); setFunil(f); setCusto(c); setRanking(r); setProdutos(p); setClientes(cl);
+    }).catch(err => {
+      if (cancelled) return;
+      setError(err?.message || 'Falha ao carregar dashboard');
+    }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [range.de, range.ate]);
+
+  return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <div className="flex items-end justify-between flex-wrap gap-4">
+        <div>
+          <h2 className="text-4xl font-bold text-white">Dashboard</h2>
+          <p className="text-slate-400 mt-2">Visão executiva: faturamento, ranking, produtos, clientes, funil e custo de IA.</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {(['hoje', '7d', 'mes', '30d'] as PeriodPreset[]).map(p => (
+            <button key={p} onClick={() => { setPreset(p); setUseCustom(false); }}
+              className={cn('px-3 py-2 rounded-xl text-xs font-bold border transition-colors',
+                !useCustom && preset === p
+                  ? 'bg-indigo-500/20 border-indigo-500/40 text-indigo-200'
+                  : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10')}>
+              {p === 'hoje' ? 'Hoje' : p === '7d' ? '7 dias' : p === 'mes' ? 'Este mês' : '30 dias'}
+            </button>
+          ))}
+          <div className="flex items-center gap-1 ml-2 pl-2 border-l border-white/10">
+            <input type="date" value={customDe} onChange={e => { setCustomDe(e.target.value); setUseCustom(true); }}
+              className="bg-white/5 border border-white/10 text-slate-200 text-xs rounded-xl px-2 py-2" />
+            <span className="text-slate-500 text-xs">→</span>
+            <input type="date" value={customAte} onChange={e => { setCustomAte(e.target.value); setUseCustom(true); }}
+              className="bg-white/5 border border-white/10 text-slate-200 text-xs rounded-xl px-2 py-2" />
+          </div>
+        </div>
+      </div>
+
+      {error && (
+        <div className="rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-300 px-4 py-3 text-sm">
+          {error}
+        </div>
+      )}
+
+      {/* KPIs */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <KpiCard icon={<DollarSign size={16} />} label="Faturamento" value={kpis ? fmtBRL(kpis.faturamento_brl) : '—'} hint={kpis ? `${kpis.num_vendas} vendas` : ''} loading={loading} />
+        <KpiCard icon={<Receipt size={16} />} label="Ticket médio" value={kpis ? fmtBRL(kpis.ticket_medio_brl) : '—'} loading={loading} />
+        <KpiCard icon={<Target size={16} />} label="Conversão" value={kpis ? fmtPct(kpis.conversao) : '—'} hint={kpis ? `${kpis.num_vendas}/${kpis.num_orcamentos}` : ''} loading={loading} />
+        <KpiCard icon={<FileText size={16} />} label="Orçamentos" value={kpis ? fmtNum(kpis.num_orcamentos) : '—'} hint={kpis ? `${kpis.num_abertos} abertos · ${kpis.num_cancelados} cancel.` : ''} loading={loading} />
+      </div>
+
+      {/* Funil + Custo IA */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Section title="Funil" subtitle="Mensagens recebidas → orçamentos → vendas">
+          {!funil ? <Skeleton /> : (
+            <div className="space-y-3">
+              <FunnelRow label="Mensagens recebidas" value={funil.mensagens_in} color="bg-slate-500/40" pct={1} />
+              <FunnelRow label="Orçamentos gerados" value={funil.orcamentos} color="bg-indigo-500/60" pct={funil.mensagens_in > 0 ? funil.orcamentos / funil.mensagens_in : 0} />
+              <FunnelRow label="Vendas fechadas" value={funil.vendas} color="bg-emerald-500/60" pct={funil.mensagens_in > 0 ? funil.vendas / funil.mensagens_in : 0} />
+              <div className="text-xs text-slate-400 pt-2 border-t border-white/5 grid grid-cols-2 gap-2">
+                <div>Msg → Orç: <span className="text-slate-200 font-semibold">{fmtPct(funil.taxa_msg_para_orc)}</span></div>
+                <div>Orç → Venda: <span className="text-slate-200 font-semibold">{fmtPct(funil.taxa_orc_para_venda)}</span></div>
+              </div>
+            </div>
+          )}
+        </Section>
+
+        <Section title="Custo de IA" subtitle="Tokens e USD agregados (sem Whisper)">
+          {!custo ? <Skeleton /> : (
+            <div className="space-y-3">
+              <div className="grid grid-cols-3 gap-3">
+                <Stat label="Custo" value={fmtUSD(custo.total_cost_usd)} />
+                <Stat label="Tokens" value={fmtNum(custo.total_tokens)} />
+                <Stat label="Chamadas" value={fmtNum(custo.calls)} />
+              </div>
+              <div className="pt-2 border-t border-white/5">
+                <p className="text-[10px] uppercase tracking-widest text-slate-500 mb-2">Por modelo</p>
+                {custo.por_modelo.length === 0 ? (
+                  <p className="text-xs text-slate-500">Sem chamadas no período.</p>
+                ) : custo.por_modelo.map((m: any) => (
+                  <div key={m.chave} className="flex items-center justify-between text-xs py-1">
+                    <span className="text-slate-300 font-mono">{m.chave}</span>
+                    <span className="text-slate-400">{fmtNum(m.tokens)} tk · <span className="text-slate-200 font-semibold">{fmtUSD(m.cost_usd)}</span></span>
+                  </div>
+                ))}
+              </div>
+              <div className="pt-2 border-t border-white/5">
+                <p className="text-[10px] uppercase tracking-widest text-slate-500 mb-2">Por propósito</p>
+                {custo.por_purpose.length === 0 ? (
+                  <p className="text-xs text-slate-500">—</p>
+                ) : custo.por_purpose.map((m: any) => (
+                  <div key={m.chave} className="flex items-center justify-between text-xs py-1">
+                    <span className="text-slate-300">{m.chave}</span>
+                    <span className="text-slate-400">{fmtNum(m.calls)} calls · <span className="text-slate-200 font-semibold">{fmtUSD(m.cost_usd)}</span></span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </Section>
+      </div>
+
+      {/* Ranking de vendedores */}
+      <Section title="Ranking de vendedores" subtitle="Ordenado por faturamento no período">
+        {!ranking ? <Skeleton /> : ranking.rows.length === 0 ? (
+          <p className="text-sm text-slate-500">Sem orçamentos no período.</p>
+        ) : (
+          <div className="overflow-auto">
+            <table className="w-full text-sm">
+              <thead className="text-[10px] uppercase text-slate-500">
+                <tr>
+                  <th className="text-left py-2 font-bold">Vendedor</th>
+                  <th className="text-right py-2 font-bold">Faturamento</th>
+                  <th className="text-right py-2 font-bold">Vendas</th>
+                  <th className="text-right py-2 font-bold">Ticket médio</th>
+                  <th className="text-right py-2 font-bold">Conversão</th>
+                  <th className="text-right py-2 font-bold">Tempo médio</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ranking.rows.map((r: any) => (
+                  <tr key={r.vendedor_id} className="border-t border-white/5">
+                    <td className="py-2">
+                      <p className="text-slate-200 font-medium">{r.vendedor_nome || '(sem nome)'}</p>
+                      <p className="text-[10px] text-slate-500 font-mono">{r.vendedor_whatsapp}</p>
+                    </td>
+                    <td className="py-2 text-right text-slate-200 font-semibold">{fmtBRL(r.faturamento_brl)}</td>
+                    <td className="py-2 text-right text-slate-300">{r.num_vendas}/{r.num_orcamentos}</td>
+                    <td className="py-2 text-right text-slate-300">{fmtBRL(r.ticket_medio_brl)}</td>
+                    <td className="py-2 text-right text-slate-300">{fmtPct(r.conversao)}</td>
+                    <td className="py-2 text-right text-slate-400 text-xs">
+                      {r.tempo_medio_fechamento_horas != null ? `${r.tempo_medio_fechamento_horas.toFixed(1)} h` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Section>
+
+      {/* Top produtos */}
+      <Section title="Produtos" subtitle="Mais vendidos · Cotados sem venda · Encalhados">
+        {!produtos ? <Skeleton /> : (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <ProdutoColuna titulo="Mais vendidos" icon={<TrendingUp size={14} className="text-emerald-400" />} rows={produtos.mais_vendidos} mode="qtd" />
+            <ProdutoColuna titulo="Cotados sem venda" icon={<TrendingDown size={14} className="text-rose-400" />} rows={produtos.mais_cotados_sem_venda} mode="qtd" />
+            <ProdutoColuna titulo="Encalhados (90d)" icon={<AlertTriangle size={14} className="text-amber-400" />} rows={produtos.encalhados} mode="encalhado" />
+          </div>
+        )}
+      </Section>
+
+      {/* Clientes */}
+      <Section title="Clientes" subtitle="Top compradores · Inativos (>60d) · Curva ABC">
+        {!clientes ? <Skeleton /> : (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-slate-500 mb-2 flex items-center gap-1"><Sparkles size={12} className="text-indigo-300" /> Top compradores</p>
+              {clientes.top_compradores.length === 0 ? <p className="text-xs text-slate-500">Sem vendas no período.</p> : (
+                <ul className="space-y-1.5">
+                  {clientes.top_compradores.map((c: any, i: number) => (
+                    <li key={(c.cliente_id || c.cliente_nome) + i} className="flex items-center justify-between text-xs">
+                      <span className="truncate text-slate-300 mr-2">{i + 1}. {c.cliente_nome}</span>
+                      <span className="text-slate-200 font-semibold whitespace-nowrap">{fmtBRL(c.faturamento_brl)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-slate-500 mb-2">Inativos (sem compra há &gt;60 dias)</p>
+              {clientes.inativos.length === 0 ? <p className="text-xs text-slate-500">Sem inativos.</p> : (
+                <ul className="space-y-1.5">
+                  {clientes.inativos.map((c: any, i: number) => (
+                    <li key={(c.cliente_id || c.cliente_nome) + i} className="flex items-center justify-between text-xs">
+                      <span className="truncate text-slate-300 mr-2">{c.cliente_nome}</span>
+                      <span className="text-slate-500 whitespace-nowrap">
+                        {c.ultima_compra ? new Date(c.ultima_compra).toLocaleDateString('pt-BR') : '—'}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div>
+              <p className="text-[10px] uppercase tracking-widest text-slate-500 mb-2">Curva ABC</p>
+              {clientes.abc.total_clientes === 0 ? (
+                <p className="text-xs text-slate-500">Sem dados pra ABC no período.</p>
+              ) : (
+                <div className="space-y-2">
+                  {clientes.abc.buckets.map((b: any) => (
+                    <div key={b.letra} className="flex items-center gap-2">
+                      <span className={cn('w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold',
+                        b.letra === 'A' ? 'bg-emerald-500/20 text-emerald-300' :
+                        b.letra === 'B' ? 'bg-amber-500/20 text-amber-300' : 'bg-slate-500/20 text-slate-300')}>{b.letra}</span>
+                      <div className="flex-1 text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-300">{b.clientes} cliente(s)</span>
+                          <span className="text-slate-400">{fmtPct(b.faixa_faturamento_pct)} fat.</span>
+                        </div>
+                        <div className="h-1.5 mt-1 rounded-full bg-white/5 overflow-hidden">
+                          <div className={cn('h-full',
+                            b.letra === 'A' ? 'bg-emerald-500/60' :
+                            b.letra === 'B' ? 'bg-amber-500/60' : 'bg-slate-500/60')}
+                            style={{ width: `${Math.min(100, b.faixa_faturamento_pct * 100)}%` }} />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  <p className="text-[10px] text-slate-500 pt-1">Total: {clientes.abc.total_clientes} clientes · {fmtBRL(clientes.abc.faturamento_total_brl)}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+}
+
+function KpiCard({ icon, label, value, hint, loading }: { icon: React.ReactNode; label: string; value: string; hint?: string; loading?: boolean }) {
+  return (
+    <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-5">
+      <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-slate-400 font-bold">
+        {icon}<span>{label}</span>
+      </div>
+      <p className={cn('text-2xl font-bold text-white mt-2', loading && 'opacity-30')}>{value}</p>
+      {hint && <p className="text-[10px] text-slate-500 mt-1">{hint}</p>}
+    </div>
+  );
+}
+
+function Section({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-5">
+      <div className="mb-4">
+        <h3 className="text-base font-bold text-white">{title}</h3>
+        {subtitle && <p className="text-xs text-slate-400 mt-0.5">{subtitle}</p>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-widest text-slate-500">{label}</p>
+      <p className="text-lg font-bold text-white mt-1">{value}</p>
+    </div>
+  );
+}
+
+function Skeleton() {
+  return <div className="h-24 animate-pulse rounded-xl bg-white/5" />;
+}
+
+function FunnelRow({ label, value, color, pct }: { label: string; value: number; color: string; pct: number }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between text-xs mb-1">
+        <span className="text-slate-300">{label}</span>
+        <span className="text-slate-200 font-semibold">{fmtNum(value)}</span>
+      </div>
+      <div className="h-2 rounded-full bg-white/5 overflow-hidden">
+        <div className={cn('h-full', color)} style={{ width: `${Math.min(100, Math.max(2, pct * 100))}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function ProdutoColuna({ titulo, icon, rows, mode }: { titulo: string; icon: React.ReactNode; rows: any[]; mode: 'qtd' | 'encalhado' }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-widest text-slate-500 mb-2 flex items-center gap-1.5">{icon}{titulo}</p>
+      {rows.length === 0 ? <p className="text-xs text-slate-500">Sem dados no período.</p> : (
+        <ul className="space-y-1.5">
+          {rows.map((p: any, i: number) => (
+            <li key={(p.descricao || '') + i} className="text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-slate-300">{p.descricao}</span>
+                <span className="text-slate-200 font-semibold whitespace-nowrap">
+                  {mode === 'qtd' ? `${fmtNum(p.qtd_total)} un` : (p.preco_venda != null ? fmtBRL(p.preco_venda) : '—')}
+                </span>
+              </div>
+              {p.marca && <p className="text-[10px] text-slate-500">{p.marca}</p>}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
