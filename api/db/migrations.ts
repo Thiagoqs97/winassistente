@@ -108,24 +108,39 @@ async function initDB(): Promise<void> {
     `);
     await client.query(`ALTER TABLE orcamentos ADD COLUMN IF NOT EXISTS atualizado_em TIMESTAMP;`);
 
-    // Ordem CRÍTICA: DROP da constraint antiga antes do UPDATE que migra os valores,
-    // senão a constraint vigente bloqueia a migração de 'finalizado' → 'aberto'.
+    // Migração idempotente da constraint de status. Tudo num único DO block:
+    // (1) o pg_advisory_xact_lock serializa instâncias serverless concorrentes — sem ele,
+    //     duas instâncias passam pelo IF NOT EXISTS, ambas executam ADD e a 2ª quebra com 42710,
+    //     deixando o dbInitPromise da instância rejeitado e tudo retornando 500;
+    // (2) se a constraint já existir com o CHECK correto, não toca em nada.
     await client.query(`
       DO $$
       BEGIN
-        IF EXISTS (
-          SELECT 1 FROM information_schema.table_constraints
-          WHERE table_name = 'orcamentos' AND constraint_name = 'orcamentos_status_check'
+        PERFORM pg_advisory_xact_lock(73219001);
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM information_schema.check_constraints cc
+          JOIN information_schema.constraint_column_usage ccu
+            ON cc.constraint_name = ccu.constraint_name
+          WHERE ccu.table_name = 'orcamentos'
+            AND cc.constraint_name = 'orcamentos_status_check'
+            AND cc.check_clause LIKE '%aberto%'
+            AND cc.check_clause LIKE '%venda%'
+            AND cc.check_clause LIKE '%cancelado%'
         ) THEN
-          ALTER TABLE orcamentos DROP CONSTRAINT orcamentos_status_check;
+          IF EXISTS (
+            SELECT 1 FROM information_schema.table_constraints
+            WHERE table_name = 'orcamentos' AND constraint_name = 'orcamentos_status_check'
+          ) THEN
+            ALTER TABLE orcamentos DROP CONSTRAINT orcamentos_status_check;
+          END IF;
+          UPDATE orcamentos SET status = 'aberto' WHERE status = 'finalizado';
+          ALTER TABLE orcamentos
+            ADD CONSTRAINT orcamentos_status_check
+            CHECK (status IN ('aberto', 'venda', 'cancelado'));
         END IF;
       END $$;
-    `);
-    await client.query(`UPDATE orcamentos SET status = 'aberto' WHERE status = 'finalizado';`);
-    await client.query(`
-      ALTER TABLE orcamentos
-      ADD CONSTRAINT orcamentos_status_check
-      CHECK (status IN ('aberto', 'venda', 'cancelado'));
     `);
     await client.query(`ALTER TABLE orcamentos ALTER COLUMN status SET DEFAULT 'aberto';`);
 

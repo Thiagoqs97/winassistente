@@ -37,6 +37,12 @@ app.use(async (req, _res, next) => {
   }
 });
 
+// Webhook do Evolution vem ANTES dos routers protegidos. Vários routers do painel
+// usam `router.use(requireAuth)`, que dispara para qualquer request que entra no
+// router — inclusive paths que ele não declara. Se o webhook ficar depois deles,
+// o primeiro router protegido intercepta o POST do Evolution e devolve 401.
+app.use('/api', webhookRouter);
+
 // Rotas públicas (login) e rotas com autenticação própria via cookie/JWT.
 // O middleware de auth é aplicado dentro de cada router que precisa.
 app.use('/api', authRouter);
@@ -48,7 +54,6 @@ app.use('/api', vendedoresRouter);
 app.use('/api', configRouter);
 app.use('/api', setupRouter);
 app.use('/api', dashboardRouter);
-app.use('/api', webhookRouter);
 
 export async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
