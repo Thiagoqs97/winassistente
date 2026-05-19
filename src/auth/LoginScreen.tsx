@@ -27,13 +27,8 @@ export function LoginScreen() {
       <div className="absolute bottom-[-10%] right-[-10%] w-[600px] h-[600px] bg-purple-600/20 rounded-full blur-[140px] pointer-events-none"></div>
 
       <div className="relative w-full max-w-md">
-        <div className="flex items-center gap-3 mb-8 justify-center">
-          <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/30">
-            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-          </div>
-          <span className="text-2xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">
-            WIN <span className="font-light">DISTRIBUIDORA</span>
-          </span>
+        <div className="flex items-center justify-center mb-8">
+          <img src="/logowin.png" alt="WIN Distribuidora" className="h-24 w-24 rounded-2xl shadow-lg shadow-indigo-500/30" />
         </div>
 
         <form onSubmit={handleSubmit} className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-8 shadow-2xl space-y-6">

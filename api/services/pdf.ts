@@ -1,5 +1,8 @@
 import PDFDocument from 'pdfkit';
+import fs from 'fs';
+import path from 'path';
 import { pool } from '../db/pool.js';
+import { logger } from '../lib/logger.js';
 
 // Layout descrito em docs/PDF_ORCAMENTO.md. PDFKit, A4, fontes nativas (Helvetica).
 // Geração inteiramente no backend; retorna Buffer pronto pra resposta HTTP ou
@@ -15,9 +18,27 @@ const EMPRESA = {
   ie: 'IE: 197705260',
 };
 
-const COR_PRIMARIA = '#1a3a8a';
 const COR_LINHA = '#bfbfbf';
 const COR_SECUNDARIA = '#666666';
+
+// Carrega a logo do disco uma única vez (cache em memória). Em Vercel, o
+// vercel.json declara `includeFiles: public/**` pra empacotar junto.
+let logoBuffer: Buffer | null = null;
+function loadLogo(): Buffer | null {
+  if (logoBuffer !== null) return logoBuffer;
+  const candidates = [
+    path.join(process.cwd(), 'public', 'logowin.png'),
+    path.join(process.cwd(), 'logowin.png'),
+  ];
+  for (const p of candidates) {
+    try {
+      logoBuffer = fs.readFileSync(p);
+      return logoBuffer;
+    } catch {}
+  }
+  logger.warn('PDF: logo logowin.png não encontrada — caindo no fallback de texto');
+  return null;
+}
 
 interface OrcamentoRow {
   numero: string;
@@ -164,11 +185,16 @@ export function renderOrcamentoPDF(orc: OrcamentoRow, cliente: ClienteRow | null
 
     // ── 2. Bloco empresa (logo + dados) ──────────────────────────────────────
     const topoEmpresa = 50;
-    // Logo retangular WIN
-    doc.roundedRect(M, topoEmpresa, 90, 50, 4).fill(COR_PRIMARIA);
-    doc.fillColor('white').font('Helvetica-Bold').fontSize(11);
-    doc.text('WIN', M, topoEmpresa + 10, { width: 90, align: 'center' });
-    doc.fontSize(7).text('DISTRIBUIDORA', M, topoEmpresa + 28, { width: 90, align: 'center' });
+    const logo = loadLogo();
+    if (logo) {
+      doc.image(logo, M, topoEmpresa, { fit: [60, 60] });
+    } else {
+      // Fallback: retângulo desenhado, caso o asset esteja ausente.
+      doc.roundedRect(M, topoEmpresa, 90, 50, 4).fill('#1a3a8a');
+      doc.fillColor('white').font('Helvetica-Bold').fontSize(11);
+      doc.text('WIN', M, topoEmpresa + 10, { width: 90, align: 'center' });
+      doc.fontSize(7).text('DISTRIBUIDORA', M, topoEmpresa + 28, { width: 90, align: 'center' });
+    }
 
     // Dados da empresa (right-aligned)
     doc.fillColor('black').font('Helvetica').fontSize(9);

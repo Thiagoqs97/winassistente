@@ -79,10 +79,7 @@ function ProtectedApp() {
 
       <nav className="relative z-10 h-16 border-b border-white/10 backdrop-blur-md bg-white/5 flex items-center justify-between px-8">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-500/20">
-            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-          </div>
-          <span className="text-xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400">WIN <span className="font-light">DISTRIBUIDORA</span></span>
+          <img src="/logowin.png" alt="WIN Distribuidora" className="h-10 w-10 rounded-lg shadow-lg shadow-indigo-500/20" />
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 border border-green-500/20 rounded-full">
