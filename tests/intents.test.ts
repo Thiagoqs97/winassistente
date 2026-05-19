@@ -3,6 +3,7 @@ import {
   parseNomeVendedor,
   parseConfirmacao,
   parseEscolha,
+  parseComandoSlash,
   normalizarNumeroOrcamento,
   formatClienteResumo,
 } from '../api/services/intents.js';
@@ -130,6 +131,33 @@ describe('normalizarNumeroOrcamento', () => {
     expect(normalizarNumeroOrcamento('')).toBeNull();
     expect(normalizarNumeroOrcamento(null)).toBeNull();
     expect(normalizarNumeroOrcamento(undefined)).toBeNull();
+  });
+});
+
+describe('parseComandoSlash', () => {
+  it('reconhece /ajuda e variantes', () => {
+    expect(parseComandoSlash('/ajuda')).toBe('ajuda');
+    expect(parseComandoSlash('ajuda')).toBe('ajuda');
+    expect(parseComandoSlash('AJUDA')).toBe('ajuda');
+    expect(parseComandoSlash('/help')).toBe('ajuda');
+    expect(parseComandoSlash('help')).toBe('ajuda');
+    expect(parseComandoSlash('/comandos')).toBe('ajuda');
+    expect(parseComandoSlash('menu')).toBe('ajuda');
+    expect(parseComandoSlash('ajuda?')).toBe('ajuda');
+  });
+
+  it('reconhece /status', () => {
+    expect(parseComandoSlash('/status')).toBe('status');
+    expect(parseComandoSlash('status')).toBe('status');
+    expect(parseComandoSlash('STATUS')).toBe('status');
+    expect(parseComandoSlash('  status  ')).toBe('status');
+  });
+
+  it('ignora frases que contêm a palavra mas não são o comando', () => {
+    expect(parseComandoSlash('preciso de ajuda com isso')).toBeNull();
+    expect(parseComandoSlash('qual o status do orçamento?')).toBeNull();
+    expect(parseComandoSlash('me ajuda aí')).toBeNull();
+    expect(parseComandoSlash('')).toBeNull();
   });
 });
 

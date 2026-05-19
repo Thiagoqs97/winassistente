@@ -75,6 +75,18 @@ export function formatListaClientes(candidatos: ClienteMatch[]): string {
     .join('\n');
 }
 
+// Comandos slash (Fase 4 — UX WhatsApp). Determinístico, antes do LLM.
+// Aceita com ou sem barra ("ajuda" e "/ajuda" valem).
+export type ComandoSlash = 'ajuda' | 'status';
+
+export function parseComandoSlash(text: string): ComandoSlash | null {
+  if (!text) return null;
+  const t = text.trim().toLowerCase().replace(/[.!?]+$/, '');
+  if (/^\/?(ajuda|help|comandos|menu)$/.test(t)) return 'ajuda';
+  if (/^\/?status$/.test(t)) return 'status';
+  return null;
+}
+
 // Normaliza "123" / "ORC-7" / "orc 45" → "ORC-000123"
 export function normalizarNumeroOrcamento(ref: string | null | undefined): string | null {
   if (!ref) return null;

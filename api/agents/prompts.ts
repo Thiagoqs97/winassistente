@@ -5,10 +5,10 @@ export const EXTRACT_INTENT_PROMPT = `Você NÃO é um chatbot. Você é um CLAS
 
 SAÍDA (JSON obrigatório):
 {
-  "intent": "pedido" | "listar_abertos" | "buscar_por_cliente" | "fechar_venda" | "cancelar_orcamento" | "alterar_orcamento" | "outro",
+  "intent": "pedido" | "listar_abertos" | "buscar_por_cliente" | "historico_cliente" | "fechar_venda" | "cancelar_orcamento" | "alterar_orcamento" | "outro",
   "new_session": boolean,        // true SOMENTE se o vendedor pediu novo pedido / outro cliente explicitamente
   "ref_numero": string | null,   // se citou um nº de orçamento (ex: "ORC-000123", "123", "o orçamento 45"). Devolva os DÍGITOS apenas: "123", "45". null se não citou.
-  "cliente_busca": string | null,// se intent=buscar_por_cliente, nome a buscar. null caso contrário.
+  "cliente_busca": string | null,// se intent=buscar_por_cliente OU historico_cliente, nome a buscar. null caso contrário.
   "terms": string[]              // termos de busca de produto, em minúsculas. Use SÓ para intent=pedido ou alterar_orcamento.
 }
 
@@ -16,6 +16,7 @@ DEFINIÇÃO DOS INTENTS:
 - "pedido": vendedor está montando um orçamento novo (citando produtos, quantidades, confirmando itens, perguntando preço/variações). Default na dúvida.
 - "listar_abertos": vendedor pergunta seus orçamentos em aberto / em negociação ("quais orçamentos estão abertos?", "lista meus orçamentos", "o que tenho em negociação", "quais orçamentos não fechei ainda").
 - "buscar_por_cliente": vendedor pede orçamentos de um cliente pelo nome ("orçamentos do João", "tenho algum orçamento da Maria?", "busca orçamentos do Pedro Silva"). Preencha cliente_busca com o nome.
+- "historico_cliente": vendedor pede o histórico de COMPRAS de um cliente — agregado, não só orçamentos abertos ("histórico do João", "o que a Maria já comprou", "compras do Pedro", "ver compras do cliente X"). Preencha cliente_busca com o nome. Diferente de "buscar_por_cliente": aqui o foco é o resumo histórico (totais, última compra), não a lista de orçamentos.
 - "fechar_venda": vendedor quer marcar um orçamento como venda fechada ("fechei o ORC-123", "marca o 45 como venda", "o 123 virou venda", "vendi o orçamento 7"). Preencha ref_numero.
 - "cancelar_orcamento": vendedor quer cancelar um orçamento ("cancela o ORC-123", "cancela o 45", "esquece o orçamento 7"). Preencha ref_numero.
 - "alterar_orcamento": vendedor quer modificar um orçamento já gerado ("adiciona 2 whey no ORC-123", "muda a quantidade do 45", "tira o tasty do 7", "no 123 troca o sabor"). Preencha ref_numero E terms (novos produtos/itens citados).
@@ -39,7 +40,9 @@ EXEMPLOS:
 - "cancela o ORC-7" → {"intent":"cancelar_orcamento","new_session":false,"ref_numero":"7","cliente_busca":null,"terms":[]}
 - "adiciona 2 whey gold no ORC-123" → {"intent":"alterar_orcamento","new_session":false,"ref_numero":"123","cliente_busca":null,"terms":["whey gold"]}
 - "Bom dia" → {"intent":"outro","new_session":false,"ref_numero":null,"cliente_busca":null,"terms":[]}
-- "esquece, novo pedido pra outro cliente" → {"intent":"pedido","new_session":true,"ref_numero":null,"cliente_busca":null,"terms":[]}`;
+- "esquece, novo pedido pra outro cliente" → {"intent":"pedido","new_session":true,"ref_numero":null,"cliente_busca":null,"terms":[]}
+- "histórico do João" → {"intent":"historico_cliente","new_session":false,"ref_numero":null,"cliente_busca":"joão","terms":[]}
+- "quanto a Maria já comprou?" → {"intent":"historico_cliente","new_session":false,"ref_numero":null,"cliente_busca":"maria","terms":[]}`;
 
 export interface OrcamentoEmAlteracao {
   numero: string;
@@ -135,12 +138,20 @@ CLIENTES — IMPORTANTE:
 - Se o vendedor pedir para CADASTRAR um cliente novo SEM estar fazendo um orçamento (ex: "cadastra o cliente Pedro Almeida, CPF 123..., telefone 86..."), chame "cadastrar_cliente" com o que ele passou. Nome é obrigatório.
 
 ${opts.alteracaoBlock}
+ALERTA DE PREÇO — quando avisar:
+Cada item da lista de estoque pode trazer um aviso entre colchetes começando com [ATENÇÃO PREÇO SUBIU: ...] ou [ATENÇÃO PREÇO CAIU: ...]. Esse aviso significa que o vendedor cotou aquele MESMO produto recentemente com um preço diferente. Quando isso aparecer e o vendedor estiver adicionando o item, avise UMA vez, de forma curta e natural, antes de pedir confirmação. Exemplo: "⚠️ O preço do *Whey Gold* mudou — você cotou R$ 189,00 no ORC-000045 e agora está R$ 199,00 (+5,3%). Confirma esse preço novo?". NÃO invente alerta se não veio na lista. NÃO repita o alerta nas mensagens seguintes da mesma sessão (uma vez basta). Quando o alerta diz CAIU, dê a notícia boa no mesmo formato.
+
 AMBIGUIDADE — quando perguntar:
 - Se o vendedor mandar uma mensagem que pode significar "começar um pedido novo" mas você está no meio de um orçamento (ex: ele cita um produto totalmente diferente do contexto, ou diz "outro cliente", "outro pedido"), pergunte UMA vez: "Esse é um novo orçamento ou faz parte do atual?". Não pergunte isso em mensagens normais de adição de itens.
 - Se você acabou de listar os itens identificados e a resposta dele for ambígua (ex: só "tá", "blz"), pergunte UMA vez: "Posso finalizar o orçamento agora ou quer adicionar mais algum item?". Não fique repetindo essa pergunta a cada mensagem.`;
 }
 
-export function buildStockContext(groupedResults: { term: string; products: any[] }[]): string {
+import type { VariacaoPreco } from '../services/precos.js';
+
+export function buildStockContext(
+  groupedResults: { term: string; products: any[] }[],
+  variacoesPorDescricao?: Map<string, VariacaoPreco>,
+): string {
   if (groupedResults.length === 0) return '(Nenhum produto identificado na mensagem)';
   return groupedResults.map(g =>
     `[${g.term}]\n${g.products.length > 0
@@ -152,7 +163,11 @@ export function buildStockContext(groupedResults: { term: string; products: any[
           const marcaJaNoNome = marcaUpper && descUpper.includes(marcaUpper);
           const nomeComMarca = marca && !marcaJaNoNome ? `${desc} - ${marca}` : desc;
           const preco = p.preco_venda != null ? `R$ ${p.preco_venda}` : 'consultar';
-          return `- ${nomeComMarca} - ${preco}`;
+          const variacao = variacoesPorDescricao?.get(desc.toLowerCase());
+          const alerta = variacao
+            ? ` [ATENÇÃO PREÇO ${variacao.direcao.toUpperCase()}: você cotou R$ ${variacao.preco_anterior.toFixed(2)} em ${variacao.orcamento_anterior} — agora R$ ${variacao.preco_atual.toFixed(2)} (${(variacao.delta_pct * 100).toFixed(1)}%)]`
+            : '';
+          return `- ${nomeComMarca} - ${preco}${alerta}`;
         }).join('\n')
       : '- Nenhum produto encontrado no estoque'}`
   ).join('\n\n');

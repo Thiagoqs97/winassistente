@@ -85,7 +85,7 @@ Dependências: Fase 2 (não estrita, mas reusa parte das queries).
 - [x] Tests `tests/pdf.test.ts` cobrem geração com cliente, sem cliente e com lista vazia.
 - (Fase 4) Envio automático pelo WhatsApp ao gerar/alterar orçamento.
 
-## Fase 4 — UX no WhatsApp
+## Fase 4 — UX no WhatsApp ✅ CONCLUÍDA
 
 **Objetivo:** comandos e respostas mais úteis para o vendedor, usando o que foi construído.
 
@@ -96,11 +96,11 @@ Dependências:
 - 5.5 depende de 1.c (ou comparação direta com `products.preco_venda` vs último orçamento aberto).
 
 Entregáveis:
-- **5.2 `/ajuda`** — mensagem fixa listando comandos suportados.
-- **5.4 Histórico do cliente** — "histórico do João" → últimos N orçamentos com totais.
-- **5.1 PDF anexo** — quando o agente gerar/alterar orçamento, envia o texto + o PDF como `documentMessage`.
-- **5.3 `/status`** — "snapshot" do vendedor (orçamentos abertos, faturamento mês, conversão).
-- **5.5 Alerta de mudança de preço** — antes de fechar o orçamento, comparar preço atual com último que o vendedor cotou no mesmo produto; alertar se mudou.
+- [x] **5.2 `/ajuda`** — pré-handler determinístico em `webhook.ts` (parser `parseComandoSlash` em `intents.ts`). Mensagem fixa listando comandos (orçamento, consultas, cliente). Aceita `/ajuda`, `ajuda`, `help`, `comandos`, `menu`.
+- [x] **5.4 Histórico do cliente** — novo intent `historico_cliente` no extractor. Handler busca via `searchClientes`, mostra agregados (vendas, abertos, cancelados, última venda) + últimos 5 orçamentos do cliente com o vendedor. Match único forte → resposta direta; múltiplos → pede refinar.
+- [x] **5.1 PDF anexo** — `sendWhatsAppDocument()` em `whatsapp.ts` (endpoint Evolution `/message/sendMedia`). `gravarOrcamento` envia o PDF logo após o texto, tanto em finalização quanto em alteração. Falha de anexo só loga — não bloqueia o fluxo principal.
+- [x] **5.3 `/status`** — pré-handler. Mostra snapshot do mês corrente: orçamentos abertos, vendas, cancelados, faturamento, ticket médio, conversão. Reusa `getKpis` do dashboard (Fase 2) com escopo do próprio vendedor.
+- [x] **5.5 Alerta de mudança de preço** — `api/services/precos.ts` (`getUltimosPrecosVendedor` + `compararPreco`). Busca último preço cotado pelo MESMO vendedor para a mesma `descricao` (90 dias). Variação ≥ 1% vira marcação `[ATENÇÃO PREÇO SUBIU/CAIU: ...]` embutida no `buildStockContext` do prompt final. Prompt instrui o agente a avisar uma única vez antes de pedir confirmação.
 
 ## Princípios contínuos (durante todas as fases)
 

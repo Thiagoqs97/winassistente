@@ -1,10 +1,27 @@
 import { pool } from '../db/pool.js';
 import { logger } from '../lib/logger.js';
-import { sendWhatsAppMessage } from './whatsapp.js';
+import { sendWhatsAppMessage, sendWhatsAppDocument } from './whatsapp.js';
 import { searchClientes, type ClienteMatch } from './search.js';
 import { formatListaClientes } from './intents.js';
+import { generateOrcamentoPDF } from './pdf.js';
 
 const fmtBR = (n: number) => n.toFixed(2).replace('.', ',');
+
+// Envia o PDF do orçamento como anexo. Best-effort: log e segue se falhar.
+// Não bloqueia o fluxo principal — o texto com o orçamento já foi entregue.
+async function enviarPdfAnexo(numero: string, senderNumber: string): Promise<void> {
+  try {
+    const pdf = await generateOrcamentoPDF(numero);
+    await sendWhatsAppDocument({
+      number: senderNumber,
+      buffer: pdf,
+      fileName: `${numero}.pdf`,
+      mimetype: 'application/pdf',
+    });
+  } catch (err: any) {
+    logger.error('Failed to send PDF attachment', { numero, err: err?.message });
+  }
+}
 
 export function formatarTextoOrcamento(opts: {
   numero: string;
@@ -93,6 +110,7 @@ export async function gravarOrcamento(opts: {
       [currentSessionId, vendedorId, 'assistant', replyText, 'texto']
     );
     logger.info('orcamento alterado', { numero: numeroAlvo, total, itens: itens.length, cliente_id: clienteId });
+    await enviarPdfAnexo(numeroAlvo, senderNumber);
     return { numero: numeroAlvo, replyText };
   }
 
@@ -120,6 +138,7 @@ export async function gravarOrcamento(opts: {
     [currentSessionId, vendedorId, 'assistant', replyText, 'texto']
   );
   logger.info('orcamento criado', { numero, total, itens: itens.length, cliente_id: clienteId });
+  await enviarPdfAnexo(numero, senderNumber);
   return { numero, replyText };
 }
 

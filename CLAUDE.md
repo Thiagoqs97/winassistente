@@ -57,6 +57,10 @@ Variáveis em `.env` (modelo em `.env.example`):
 | Endpoints do dashboard BI (Fase 2) | `api/routes/dashboard.ts` + `api/services/dashboard.ts` |
 | Histórico do cliente (Fase 3.1) | `GET /api/clientes/:id/historico` em `api/routes/clientes.ts` |
 | Gerador de PDF do orçamento (Fase 3.2) | `api/services/pdf.ts` (PDFKit) + endpoint `GET /api/orcamentos/:numero/pdf` |
+| Envio de documento via Evolution (Fase 4 — 5.1) | `sendWhatsAppDocument` em `api/services/whatsapp.ts` |
+| Comandos slash `/ajuda` e `/status` (Fase 4 — 5.2/5.3) | `parseComandoSlash` em `api/services/intents.ts`; pré-handlers em `api/routes/webhook.ts` |
+| Histórico do cliente no WhatsApp (Fase 4 — 5.4) | intent `historico_cliente` no extractor + handler em `api/routes/webhook.ts` |
+| Alerta de variação de preço (Fase 4 — 5.5) | `api/services/precos.ts` + injeção em `buildStockContext` em `api/agents/prompts.ts` |
 | Helper de período (de/ate, default mês atual) | `api/lib/period.ts` |
 | OpenAI client singleton | `api/lib/openai.ts` |
 | Wrapper de chat completion + tracking de custo em `ai_usage` | `api/lib/ai.ts` |
@@ -152,7 +156,7 @@ Substituição planejada do extrator para um modelo menor está no roadmap (não
 - **Fase 1** ✅: auth no painel (admin + sub-logins com permissões granulares) + tracking de custo de IA.
 - **Fase 2** ✅: dashboard BI completo (faturamento, ranking vendedores, top produtos, clientes, funil, custo IA).
 - **Fase 3** ✅: histórico de compras do cliente (endpoint + modal no painel) + geração de PDF do orçamento (PDFKit + endpoint + download no painel).
-- **Fase 4**: UX no WhatsApp (`/ajuda`, `/status`, `/historico cliente`, PDF anexo, alerta de mudança de preço).
+- **Fase 4** ✅: UX no WhatsApp (`/ajuda`, `/status`, histórico do cliente via intent natural, PDF anexo automático, alerta de mudança de preço).
 
 Detalhes e dependências em `docs/ROADMAP.md` (criado junto com o PRD v3.0).
 
@@ -183,4 +187,4 @@ Detalhes e dependências em `docs/ROADMAP.md` (criado junto com o PRD v3.0).
 - **Cliente**: comprador final da WIN (PJ ou PF) — base importada do Tiny/Bling.
 - **Orçamento**: documento numerado (ORC-NNNNNN) com itens, totais e status (`aberto`/`venda`/`cancelado`).
 - **Ação pendente** (`acao_pendente` em `sessoes`): estado intermediário aguardando confirmação ou escolha do vendedor.
-- **Intent**: classificação do que o vendedor quer (`pedido`, `listar_abertos`, `buscar_por_cliente`, `fechar_venda`, `cancelar_orcamento`, `alterar_orcamento`, `outro`).
+- **Intent**: classificação do que o vendedor quer (`pedido`, `listar_abertos`, `buscar_por_cliente`, `historico_cliente`, `fechar_venda`, `cancelar_orcamento`, `alterar_orcamento`, `outro`).

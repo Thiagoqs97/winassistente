@@ -11,9 +11,12 @@ import {
   parseNomeVendedor,
   parseConfirmacao,
   parseEscolha,
+  parseComandoSlash,
   formatListaClientes,
   normalizarNumeroOrcamento,
 } from '../services/intents.js';
+import { getKpis } from '../services/dashboard.js';
+import { getUltimosPrecosVendedor, compararPreco, type VariacaoPreco } from '../services/precos.js';
 import {
   EXTRACT_INTENT_PROMPT,
   buildAlteracaoBlock,
@@ -28,6 +31,53 @@ export const webhookRouter = Router();
 type TipoMidia = 'texto' | 'audio' | 'imagem' | 'pdf' | 'planilha';
 
 const fmtBR = (n: any) => Number(n ?? 0).toFixed(2).replace('.', ',');
+
+const MSG_AJUDA = `📋 *Comandos disponíveis*
+
+*Orçamento*
+• Mande o pedido em texto, áudio, imagem ou planilha que eu monto o orçamento.
+• Lembre de informar o nome do cliente.
+• "fechei o ORC-000123" → marca como venda.
+• "cancela o ORC-000123" → cancela.
+• "altera o ORC-000123, troca whey por creatina" → altera o orçamento aberto.
+
+*Consultas*
+• "quais orçamentos estão abertos?" → lista os seus em aberto.
+• "orçamentos do João" → busca orçamentos por cliente.
+• "histórico do João" → resumo de compras do cliente.
+• */status* → seu desempenho no mês.
+• */ajuda* → esta mensagem.
+
+*Cliente*
+• "cadastra o cliente Pedro Almeida, CPF 123..., fone 86..." → novo cliente.
+• "altera o telefone da Maria pra 86..." → edita cliente.
+
+Quando o orçamento é gerado, você recebe também o PDF anexo.`;
+
+function mesAtualRange(): { de: Date; ate: Date } {
+  const now = new Date();
+  const de = new Date(now.getFullYear(), now.getMonth(), 1);
+  const ate = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  return { de, ate };
+}
+
+async function buildStatusReply(vendedorId: string, vendedorNome: string | null): Promise<string> {
+  const range = mesAtualRange();
+  const kpis = await getKpis(range, { vendedorId });
+  const nome = vendedorNome || 'você';
+  const conv = (kpis.conversao * 100).toFixed(0);
+  const mesNome = range.de.toLocaleString('pt-BR', { month: 'long' });
+  return `📊 *Status de ${nome} em ${mesNome}*
+
+• Orçamentos abertos: *${kpis.num_abertos}*
+• Vendas fechadas: *${kpis.num_vendas}*
+• Cancelados: ${kpis.num_cancelados}
+• Faturamento: *R$ ${fmtBR(kpis.faturamento_brl)}*
+• Ticket médio: R$ ${fmtBR(kpis.ticket_medio_brl)}
+• Conversão: ${conv}%
+
+Mande */ajuda* pra ver os comandos.`;
+}
 
 function ack(res: Response) {
   if (!res.headersSent) res.json({ status: 'ok' });
@@ -184,6 +234,21 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
         }
       }
 
+      await replyAndLog(senderNumber, currentSessionId!, vendedorId, reply);
+      return;
+    }
+
+    // Slash commands (atalhos determinísticos antes do LLM). Não tocam em
+    // acao_pendente — vendedor pode pedir /ajuda no meio de uma confirmação.
+    const slash = parseComandoSlash(incomingText);
+    if (slash === 'ajuda') {
+      await gravarMensagem(currentSessionId!, vendedorId, 'user', incomingText, tipoMidia);
+      await replyAndLog(senderNumber, currentSessionId!, vendedorId, MSG_AJUDA);
+      return;
+    }
+    if (slash === 'status') {
+      await gravarMensagem(currentSessionId!, vendedorId, 'user', incomingText, tipoMidia);
+      const reply = await buildStatusReply(vendedorId, vendedorNome);
       await replyAndLog(senderNumber, currentSessionId!, vendedorId, reply);
       return;
     }
@@ -422,6 +487,75 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
       return;
     }
 
+    if (intent === 'historico_cliente') {
+      if (!clienteBusca) {
+        await replyAndLog(senderNumber, currentSessionId!, vendedorId,
+          'Qual o nome do cliente que você quer ver o histórico?');
+        return;
+      }
+      const matches = await searchClientes(clienteBusca, 5);
+      if (matches.length === 0) {
+        await replyAndLog(senderNumber, currentSessionId!, vendedorId,
+          `Não achei nenhum cliente parecido com "${clienteBusca}" na base.`);
+        return;
+      }
+      // Se vier 1 match forte, mostra direto. Senão, lista opções pra refinar.
+      const isMatchForte = (m: ClienteMatch) =>
+        m.match_type === 'documento' || m.match_type === 'externo_id' ||
+        m.match_type === 'telefone' ||
+        (m.match_type === 'fuzzy' && m.score >= 0.7);
+
+      if (matches.length > 1 || !isMatchForte(matches[0])) {
+        await replyAndLog(senderNumber, currentSessionId!, vendedorId,
+          `Achei ${matches.length} cliente${matches.length > 1 ? 's' : ''} parecido${matches.length > 1 ? 's' : ''} com "${clienteBusca}":\n\n${formatListaClientes(matches)}\n\nMe diga o nome mais específico ou o CPF do cliente que você quer ver o histórico.`);
+        return;
+      }
+
+      const c = matches[0];
+      const { rows: ultimos } = await pool.query(
+        `SELECT numero, status, total, criado_em
+         FROM orcamentos
+         WHERE cliente_id = $1 AND vendedor_id = $2
+         ORDER BY criado_em DESC
+         LIMIT 5`,
+        [c.id, vendedorId]
+      );
+      const { rows: aggRows } = await pool.query(
+        `SELECT
+           COUNT(*)::int AS total_orcamentos,
+           COUNT(*) FILTER (WHERE status = 'venda')::int AS total_vendas,
+           COUNT(*) FILTER (WHERE status = 'aberto')::int AS total_abertos,
+           COUNT(*) FILTER (WHERE status = 'cancelado')::int AS total_cancelados,
+           COALESCE(SUM(total) FILTER (WHERE status = 'venda'), 0)::numeric AS valor_vendas,
+           MAX(criado_em) FILTER (WHERE status = 'venda') AS ultima_venda
+         FROM orcamentos
+         WHERE cliente_id = $1 AND vendedor_id = $2`,
+        [c.id, vendedorId]
+      );
+      const agg = aggRows[0];
+      const statusLabel: Record<string, string> = {
+        aberto: '🟡',
+        venda: '✅',
+        cancelado: '🚫',
+      };
+      const dt = (d: any) => d ? new Date(d).toLocaleDateString('pt-BR') : '—';
+      const linhasUltimos = ultimos.length === 0
+        ? '_(nenhum orçamento ainda com você)_'
+        : ultimos.map(o => `${statusLabel[o.status] || ''} *${o.numero}* — R$ ${fmtBR(o.total)} — ${dt(o.criado_em)}`).join('\n');
+      const reply = `📂 *Histórico — ${c.nome}*
+
+Orçamentos totais: ${agg.total_orcamentos}
+Vendas fechadas: *${agg.total_vendas}* (R$ ${fmtBR(agg.valor_vendas)})
+Em aberto: ${agg.total_abertos}
+Cancelados: ${agg.total_cancelados}
+Última venda: ${dt(agg.ultima_venda)}
+
+*Últimos orçamentos:*
+${linhasUltimos}`;
+      await replyAndLog(senderNumber, currentSessionId!, vendedorId, reply);
+      return;
+    }
+
     if (intent === 'buscar_por_cliente') {
       if (!clienteBusca) {
         await replyAndLog(senderNumber, currentSessionId!, vendedorId,
@@ -537,7 +671,24 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
 
     logger.info('search', { terms: termsToSearch, found: searchResults.length });
 
-    const stockContext = buildStockContext(groupedResults);
+    // Alerta de preço (Fase 4 — 5.5): compara preço atual de cada produto
+    // encontrado com o último preço cotado pelo MESMO vendedor para o mesmo
+    // produto. Variação >= 1% vira aviso embutido no contexto do agente.
+    const variacoesPorDescricao = new Map<string, VariacaoPreco>();
+    const descricoesEncontradas = Array.from(new Set(
+      searchResults.map(p => String(p.descricao || '').trim()).filter(Boolean)
+    ));
+    if (descricoesEncontradas.length > 0) {
+      const ultimos = await getUltimosPrecosVendedor(vendedorId, descricoesEncontradas);
+      for (const p of searchResults) {
+        const desc = String(p.descricao || '').trim();
+        const ult = ultimos.get(desc.toLowerCase());
+        const v = compararPreco(Number(p.preco_venda), ult);
+        if (v) variacoesPorDescricao.set(desc.toLowerCase(), v);
+      }
+    }
+
+    const stockContext = buildStockContext(groupedResults, variacoesPorDescricao);
     const alteracaoBlock = buildAlteracaoBlock(orcamentoEmAlteracao);
     const finalPrompt = buildFinalPrompt({
       corePrompt: config.core_prompt,
