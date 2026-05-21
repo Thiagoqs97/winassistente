@@ -10,6 +10,9 @@ coverage/
 .vercel
 .env*.local
 
+# Claude Code local config
+.claude/
+
 # Local-only data & ad-hoc DB scripts (PII / hardcoded credentials)
 data/
 dbtest.mjs

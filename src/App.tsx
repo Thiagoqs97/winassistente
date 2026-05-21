@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { PackageOpen, MessageSquare, Settings, Upload, History, FileText, ShoppingBag, Users, UserCog, LogOut, LayoutDashboard, TrendingUp, TrendingDown, DollarSign, Target, Receipt, AlertTriangle, Sparkles } from 'lucide-react';
+import { PackageOpen, MessageSquare, Settings, Upload, History, FileText, ShoppingBag, Users, UserCog, LogOut, LayoutDashboard, TrendingUp, TrendingDown, DollarSign, Target, Receipt, AlertTriangle, Sparkles, Menu, X } from 'lucide-react';
 import { cn } from './lib/utils';
 import { useAuth } from './auth/AuthContext';
 import { LoginScreen } from './auth/LoginScreen';
 import { hasAnyPermission, PERMISSION_LABELS, PERMISSIONS, type Permission } from './lib/permissions';
+import { InstallPrompt } from './InstallPrompt';
 
 type TabKey = 'dashboard' | 'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas' | 'clientes' | 'users';
 
@@ -32,9 +33,19 @@ export default function App() {
     );
   }
 
-  if (!user) return <LoginScreen />;
+  if (!user) return (
+    <>
+      <LoginScreen />
+      <InstallPrompt />
+    </>
+  );
 
-  return <ProtectedApp />;
+  return (
+    <>
+      <ProtectedApp />
+      <InstallPrompt />
+    </>
+  );
 }
 
 function ProtectedApp() {
@@ -51,6 +62,7 @@ function ProtectedApp() {
   }, [u]);
 
   const [activeTab, setActiveTab] = useState<TabKey>(() => visibleTabs[0] || 'orcamentos');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Se o user perder acesso à tab atual (em refresh), reposiciona.
   useEffect(() => {
@@ -58,6 +70,17 @@ function ProtectedApp() {
       setActiveTab(visibleTabs[0]);
     }
   }, [visibleTabs, activeTab]);
+
+  // Trava scroll do body quando o drawer mobile está aberto.
+  useEffect(() => {
+    if (sidebarOpen) {
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => { document.body.style.overflow = prev; };
+    }
+  }, [sidebarOpen]);
+
+  const goTo = (t: TabKey) => { setActiveTab(t); setSidebarOpen(false); };
 
   if (visibleTabs.length === 0) {
     return (
@@ -71,59 +94,111 @@ function ProtectedApp() {
     );
   }
 
-  return (
-    <div className="flex flex-col h-screen bg-[#020617] text-slate-200 font-sans overflow-hidden relative">
-      <div className="absolute top-[-10%] left-[-5%] w-[400px] h-[400px] bg-indigo-600/20 rounded-full blur-[120px] pointer-events-none"></div>
-      <div className="absolute bottom-[10%] right-[-5%] w-[500px] h-[500px] bg-purple-600/20 rounded-full blur-[120px] pointer-events-none"></div>
-      <div className="absolute top-[20%] right-[15%] w-[300px] h-[300px] bg-cyan-500/10 rounded-full blur-[100px] pointer-events-none"></div>
+  const sidebarLinks = (
+    <>
+      <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold px-2">Navegação</p>
+      {visibleTabs.includes('dashboard') && <SidebarItem icon={<LayoutDashboard size={16} />} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => goTo('dashboard')} />}
+      {visibleTabs.includes('import') && <SidebarItem icon={<Upload size={16} />} label="Importação" active={activeTab === 'import'} onClick={() => goTo('import')} />}
+      {visibleTabs.includes('products') && <SidebarItem icon={<PackageOpen size={16} />} label="Produtos" active={activeTab === 'products'} onClick={() => goTo('products')} />}
+      {visibleTabs.includes('clientes') && <SidebarItem icon={<Users size={16} />} label="Clientes" active={activeTab === 'clientes'} onClick={() => goTo('clientes')} />}
+      {visibleTabs.includes('history') && <SidebarItem icon={<History size={16} />} label="Histórico" active={activeTab === 'history'} onClick={() => goTo('history')} />}
+      {visibleTabs.includes('orcamentos') && <SidebarItem icon={<FileText size={16} />} label="Orçamentos" active={activeTab === 'orcamentos'} onClick={() => goTo('orcamentos')} />}
+      {visibleTabs.includes('vendas') && <SidebarItem icon={<ShoppingBag size={16} />} label="Vendas" active={activeTab === 'vendas'} onClick={() => goTo('vendas')} />}
+      {visibleTabs.includes('settings') && <SidebarItem icon={<Settings size={16} />} label="Configurações" active={activeTab === 'settings'} onClick={() => goTo('settings')} />}
+      {visibleTabs.includes('users') && <SidebarItem icon={<UserCog size={16} />} label="Usuários" active={activeTab === 'users'} onClick={() => goTo('users')} />}
+    </>
+  );
 
-      <nav className="relative z-10 h-16 border-b border-white/10 backdrop-blur-md bg-white/5 flex items-center justify-between px-8">
-        <div className="flex items-center gap-3">
-          <img src="/logowin.png" alt="WIN Distribuidora" className="h-10 w-10 rounded-lg shadow-lg shadow-indigo-500/20" />
-        </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 border border-green-500/20 rounded-full">
-            <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-            <span className="text-xs font-medium text-green-400 uppercase tracking-widest">Sistema Online</span>
-          </div>
-          <div className="flex items-center gap-3 pl-4 border-l border-white/10">
-            <div className="text-right">
-              <p className="text-sm font-medium text-white leading-tight">{u.nome}</p>
-              <p className="text-[10px] uppercase tracking-widest text-slate-500">{u.role === 'admin' ? 'Administrador' : 'Vendedor'}</p>
-            </div>
+  return (
+    <div className="flex flex-col h-[100dvh] bg-[#020617] text-slate-200 font-sans overflow-hidden relative">
+      <div className="absolute top-[-10%] left-[-5%] w-[400px] h-[400px] bg-indigo-600/20 rounded-full blur-[120px] pointer-events-none hidden sm:block"></div>
+      <div className="absolute bottom-[10%] right-[-5%] w-[500px] h-[500px] bg-purple-600/20 rounded-full blur-[120px] pointer-events-none hidden sm:block"></div>
+      <div className="absolute top-[20%] right-[15%] w-[300px] h-[300px] bg-cyan-500/10 rounded-full blur-[100px] pointer-events-none hidden lg:block"></div>
+
+      <nav className="relative z-30 border-b border-white/10 backdrop-blur-md bg-white/5 safe-pt safe-pl safe-pr">
+        <div className="h-14 sm:h-16 flex items-center justify-between px-3 sm:px-6 lg:px-8 gap-2">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <button
-              onClick={logout}
-              title="Sair"
-              className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 hover:bg-rose-500/20 hover:text-rose-300 border border-white/10 hover:border-rose-500/30 text-slate-400 transition-colors"
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Abrir menu"
+              className="lg:hidden w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300"
             >
-              <LogOut size={16} />
+              <Menu size={18} />
             </button>
+            <img src="/logowin.png" alt="WIN Distribuidora" className="h-8 w-8 sm:h-10 sm:w-10 rounded-lg shadow-lg shadow-indigo-500/20" />
+          </div>
+          <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+            <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-green-500/10 border border-green-500/20 rounded-full">
+              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+              <span className="text-xs font-medium text-green-400 uppercase tracking-widest">Sistema Online</span>
+            </div>
+            <div className="flex items-center gap-2 sm:gap-3 md:pl-4 md:border-l md:border-white/10 min-w-0">
+              <div className="text-right hidden sm:block min-w-0">
+                <p className="text-sm font-medium text-white leading-tight truncate max-w-[160px]">{u.nome}</p>
+                <p className="text-[10px] uppercase tracking-widest text-slate-500">{u.role === 'admin' ? 'Administrador' : 'Vendedor'}</p>
+              </div>
+              <button
+                onClick={logout}
+                title="Sair"
+                aria-label="Sair"
+                className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 hover:bg-rose-500/20 hover:text-rose-300 border border-white/10 hover:border-rose-500/30 text-slate-400 transition-colors flex-shrink-0"
+              >
+                <LogOut size={16} />
+              </button>
+            </div>
           </div>
         </div>
       </nav>
 
       <div className="flex flex-1 relative z-10 overflow-hidden">
-        <aside className="w-64 border-r border-white/10 backdrop-blur-md bg-white/5 p-6 flex flex-col gap-8">
+        {/* Sidebar — fixa em desktop, drawer em mobile/tablet */}
+        <aside className="hidden lg:flex w-64 border-r border-white/10 backdrop-blur-md bg-white/5 p-6 flex-col gap-8 safe-pl">
           <div className="flex flex-col gap-2">
-            <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold px-2">Navegação</p>
-            {visibleTabs.includes('dashboard') && <SidebarItem icon={<LayoutDashboard size={16} />} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />}
-            {visibleTabs.includes('import') && <SidebarItem icon={<Upload size={16} />} label="Importação" active={activeTab === 'import'} onClick={() => setActiveTab('import')} />}
-            {visibleTabs.includes('products') && <SidebarItem icon={<PackageOpen size={16} />} label="Produtos" active={activeTab === 'products'} onClick={() => setActiveTab('products')} />}
-            {visibleTabs.includes('clientes') && <SidebarItem icon={<Users size={16} />} label="Clientes" active={activeTab === 'clientes'} onClick={() => setActiveTab('clientes')} />}
-            {visibleTabs.includes('history') && <SidebarItem icon={<History size={16} />} label="Histórico" active={activeTab === 'history'} onClick={() => setActiveTab('history')} />}
-            {visibleTabs.includes('orcamentos') && <SidebarItem icon={<FileText size={16} />} label="Orçamentos" active={activeTab === 'orcamentos'} onClick={() => setActiveTab('orcamentos')} />}
-            {visibleTabs.includes('vendas') && <SidebarItem icon={<ShoppingBag size={16} />} label="Vendas" active={activeTab === 'vendas'} onClick={() => setActiveTab('vendas')} />}
-            {visibleTabs.includes('settings') && <SidebarItem icon={<Settings size={16} />} label="Configurações" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />}
-            {visibleTabs.includes('users') && <SidebarItem icon={<UserCog size={16} />} label="Usuários" active={activeTab === 'users'} onClick={() => setActiveTab('users')} />}
+            {sidebarLinks}
           </div>
-
           <div className="mt-auto p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-2xl">
             <p className="text-xs text-indigo-300 font-semibold mb-1">Agente IA v2.0</p>
             <p className="text-[10px] text-indigo-400/70">Fuzzy Search · Webhook · Whisper</p>
           </div>
         </aside>
 
-        <main className="flex-1 overflow-auto p-8 flex flex-col gap-8">
+        {/* Drawer mobile */}
+        {sidebarOpen && (
+          <div className="lg:hidden fixed inset-0 z-40">
+            <button
+              type="button"
+              aria-label="Fechar menu"
+              onClick={() => setSidebarOpen(false)}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+            <aside className="absolute top-0 left-0 h-full w-72 max-w-[85vw] bg-slate-950/95 backdrop-blur-xl border-r border-white/10 p-5 flex flex-col gap-6 safe-pt safe-pl shadow-2xl animate-in slide-in-from-left-2 duration-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <img src="/logowin.png" alt="WIN" className="h-8 w-8 rounded-lg" />
+                  <span className="text-sm font-bold text-white">Menu</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSidebarOpen(false)}
+                  aria-label="Fechar"
+                  className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="flex flex-col gap-2 overflow-auto -mx-1 px-1 flex-1">
+                {sidebarLinks}
+              </div>
+              <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-2xl">
+                <p className="text-xs text-indigo-300 font-semibold mb-1">Agente IA v2.0</p>
+                <p className="text-[10px] text-indigo-400/70">Fuzzy Search · Webhook · Whisper</p>
+              </div>
+            </aside>
+          </div>
+        )}
+
+        <main className="flex-1 overflow-auto px-3 py-4 sm:px-6 sm:py-6 lg:p-8 flex flex-col gap-6 lg:gap-8 safe-pb safe-pl safe-pr">
           <div className="max-w-5xl mx-auto w-full">
             {activeTab === 'dashboard' && <DashboardTab />}
             {activeTab === 'import' && <ImportTab />}
@@ -198,12 +273,12 @@ function ImportTab() {
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div>
-        <h2 className="text-4xl font-bold text-white">Importação de Estoque</h2>
+        <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white">Importação de Estoque</h2>
         <p className="text-slate-400 mt-2">Faça upload da planilha do Winthor. O sistema extrai automaticamente as colunas cruciais.</p>
       </div>
 
-      <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-8 shadow-sm">
-        <div className="border border-dashed border-white/20 rounded-xl p-12 text-center hover:bg-white/5 transition-colors">
+      <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-4 sm:p-8 shadow-sm">
+        <div className="border border-dashed border-white/20 rounded-xl p-6 sm:p-12 text-center hover:bg-white/5 transition-colors">
           <Upload className="mx-auto h-12 w-12 text-slate-500" />
           <p className="mt-4 text-sm text-slate-400">Arraste um arquivo .xlsx ou clique para selecionar.</p>
           <input type="file" accept=".xlsx" onChange={(e) => setFile(e.target.files?.[0] || null)} className="hidden" id="file-upload" />
@@ -255,33 +330,33 @@ function ProductsTab() {
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex justify-between items-end">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-3">
         <div>
-          <h2 className="text-4xl font-bold text-white">Gestão de Produtos</h2>
-          <p className="text-slate-400 mt-2">Consulte e edite a visibilidade dos produtos no agente de IA.</p>
+          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white">Gestão de Produtos</h2>
+          <p className="text-slate-400 mt-2 text-sm sm:text-base">Consulte e edite a visibilidade dos produtos no agente de IA.</p>
         </div>
-        <button onClick={fetchProducts} className="px-6 py-3 bg-white/10 text-white font-bold rounded-xl border border-white/10 hover:bg-white/20 transition-colors text-sm">
+        <button onClick={fetchProducts} className="px-4 sm:px-6 py-2.5 sm:py-3 bg-white/10 text-white font-bold rounded-xl border border-white/10 hover:bg-white/20 transition-colors text-sm self-start">
           Atualizar Lista
         </button>
       </div>
 
-      <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[65vh]">
-        <div className="p-6 border-b border-white/10 flex justify-between items-center">
-          <h3 className="font-bold text-white">Estoque Sincronizado</h3>
+      <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[70vh] lg:h-[65vh]">
+        <div className="p-4 sm:p-6 border-b border-white/10 flex justify-between items-center">
+          <h3 className="font-bold text-white text-sm sm:text-base">Estoque Sincronizado</h3>
           <span className="text-xs text-slate-400">{products.length} produtos</span>
         </div>
         <div className="overflow-auto flex-1">
-          <table className="w-full text-left">
+          <table className="w-full text-left min-w-[640px]">
             <thead className="bg-slate-950/50 sticky top-0 z-10 backdrop-blur-md">
               <tr className="text-[10px] uppercase text-slate-500">
-                <th className="px-4 py-4 font-bold">Código</th>
-                <th className="px-4 py-4 font-bold">Descrição</th>
-                <th className="px-4 py-4 font-bold">Marca</th>
-                <th className="px-4 py-4 font-bold">Categoria</th>
-                <th className="px-4 py-4 font-bold">Embalagem</th>
-                <th className="px-4 py-4 font-bold">Cód. Barras</th>
-                <th className="px-4 py-4 font-bold">Preço</th>
-                <th className="px-4 py-4 font-bold text-center">Status</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold">Código</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold">Descrição</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden md:table-cell">Marca</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden lg:table-cell">Categoria</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden lg:table-cell">Embalagem</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden xl:table-cell">Cód. Barras</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold">Preço</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold text-center">Status</th>
               </tr>
             </thead>
             <tbody className="text-sm">
@@ -291,14 +366,14 @@ function ProductsTab() {
                 <tr><td colSpan={8} className="p-8 text-center text-slate-500">Nenhum produto. Importe uma planilha.</td></tr>
               ) : products.map(p => (
                 <tr key={p.id} className={cn('border-t border-white/5 transition-colors hover:bg-white/5', !p.ativo && 'opacity-50')}>
-                  <td className="px-4 py-3 text-xs font-mono text-slate-500">{p.codigo}</td>
-                  <td className="px-4 py-3 text-sm text-slate-200 max-w-xs truncate">{p.descricao}</td>
-                  <td className="px-4 py-3 text-xs text-slate-400">{p.marca || '--'}</td>
-                  <td className="px-4 py-3 text-xs text-slate-400">{p.categoria || '--'}</td>
-                  <td className="px-4 py-3 text-xs text-slate-400">{p.embalagem || '--'}</td>
-                  <td className="px-4 py-3 text-xs font-mono text-slate-500">{p.codigo_barras || '--'}</td>
-                  <td className="px-4 py-3 text-sm font-semibold text-slate-200">{p.preco_venda ? `R$ ${Number(p.preco_venda).toFixed(2)}` : '--'}</td>
-                  <td className="px-4 py-3 text-center">
+                  <td className="px-3 sm:px-4 py-3 text-xs font-mono text-slate-500">{p.codigo}</td>
+                  <td className="px-3 sm:px-4 py-3 text-sm text-slate-200 max-w-[180px] sm:max-w-xs truncate">{p.descricao}</td>
+                  <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden md:table-cell">{p.marca || '--'}</td>
+                  <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden lg:table-cell">{p.categoria || '--'}</td>
+                  <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden lg:table-cell">{p.embalagem || '--'}</td>
+                  <td className="px-3 sm:px-4 py-3 text-xs font-mono text-slate-500 hidden xl:table-cell">{p.codigo_barras || '--'}</td>
+                  <td className="px-3 sm:px-4 py-3 text-sm font-semibold text-slate-200 whitespace-nowrap">{p.preco_venda ? `R$ ${Number(p.preco_venda).toFixed(2)}` : '--'}</td>
+                  <td className="px-3 sm:px-4 py-3 text-center">
                     <button onClick={() => toggleAtivo(p.id)} className={cn('inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold transition-colors', p.ativo ? 'bg-green-500/20 text-green-400' : 'bg-slate-500/20 text-slate-400')}>
                       {p.ativo ? 'ATIVO' : 'INATIVO'}
                     </button>
@@ -354,13 +429,13 @@ function HistoryTab() {
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div>
-        <h2 className="text-4xl font-bold text-white">Histórico de Conversas</h2>
-        <p className="text-slate-400 mt-2">Visualize sessões e mensagens de cada vendedor.</p>
+        <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white">Histórico de Conversas</h2>
+        <p className="text-slate-400 mt-2 text-sm sm:text-base">Visualize sessões e mensagens de cada vendedor.</p>
       </div>
 
-      <div className="grid grid-cols-3 gap-4 h-[68vh]">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:h-[68vh]">
         {/* Vendedores */}
-        <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col">
+        <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[40vh] md:h-auto">
           <div className="p-4 border-b border-white/10 flex items-center justify-between">
             <h3 className="font-bold text-white text-sm">Vendedores</h3>
             <span className="text-xs text-slate-500">{vendedores.length}</span>
@@ -381,9 +456,9 @@ function HistoryTab() {
         </div>
 
         {/* Sessões */}
-        <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col">
+        <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[40vh] md:h-auto">
           <div className="p-4 border-b border-white/10">
-            <h3 className="font-bold text-white text-sm">Sessões{selectedVendedor ? ` — ${selectedVendedor.nome || selectedVendedor.numero_whatsapp}` : ''}</h3>
+            <h3 className="font-bold text-white text-sm truncate">Sessões{selectedVendedor ? ` — ${selectedVendedor.nome || selectedVendedor.numero_whatsapp}` : ''}</h3>
           </div>
           <div className="overflow-auto flex-1">
             {!selectedVendedor ? (
@@ -404,7 +479,7 @@ function HistoryTab() {
         </div>
 
         {/* Mensagens */}
-        <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col">
+        <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[50vh] md:h-auto">
           <div className="p-4 border-b border-white/10">
             <h3 className="font-bold text-white text-sm">Mensagens</h3>
           </div>
@@ -501,12 +576,12 @@ function OrcamentosTab({ mode = 'orcamentos' }: { mode?: 'orcamentos' | 'vendas'
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div>
-        <h2 className="text-4xl font-bold text-white">{titulo}</h2>
-        <p className="text-slate-400 mt-2">{subtitulo}</p>
+        <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white">{titulo}</h2>
+        <p className="text-slate-400 mt-2 text-sm sm:text-base">{subtitulo}</p>
       </div>
 
-      <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-4">
-        <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+      <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-3 sm:p-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-6 gap-2 sm:gap-3">
           <input value={filters.numero} onChange={e => setFilters({ ...filters, numero: e.target.value })} placeholder="Nº orçamento" className="md:col-span-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-slate-500" />
           <input value={filters.cliente_nome} onChange={e => setFilters({ ...filters, cliente_nome: e.target.value })} placeholder="Cliente" className="md:col-span-2 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-slate-500" />
           <input type="date" value={filters.data_de} onChange={e => setFilters({ ...filters, data_de: e.target.value })} className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white" />
@@ -528,25 +603,25 @@ function OrcamentosTab({ mode = 'orcamentos' }: { mode?: 'orcamentos' | 'vendas'
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden">
+        <div className="lg:col-span-2 rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden">
           <div className="p-4 border-b border-white/10 flex items-center justify-between">
             <h3 className="font-bold text-white text-sm">Resultados</h3>
             <span className="text-xs text-slate-500">{list.length}</span>
           </div>
-          <div className="overflow-auto max-h-[60vh]">
+          <div className="overflow-auto max-h-[55vh] sm:max-h-[60vh]">
             {loading ? (
               <p className="p-4 text-slate-500 text-sm">Carregando...</p>
             ) : list.length === 0 ? (
               <p className="p-4 text-slate-500 text-sm">Nenhum orçamento encontrado.</p>
             ) : (
-              <table className="w-full text-sm">
+              <table className="w-full text-sm min-w-[640px]">
                 <thead className="text-[10px] uppercase tracking-widest text-slate-500 border-b border-white/10">
                   <tr>
                     <th className="text-left p-3">Nº</th>
-                    <th className="text-left p-3">Data</th>
-                    <th className="text-left p-3">Vendedor</th>
+                    <th className="text-left p-3 hidden sm:table-cell">Data</th>
+                    <th className="text-left p-3 hidden md:table-cell">Vendedor</th>
                     <th className="text-left p-3">Cliente</th>
-                    <th className="text-right p-3">Itens</th>
+                    <th className="text-right p-3 hidden sm:table-cell">Itens</th>
                     <th className="text-right p-3">Total</th>
                     <th className="text-center p-3">Status</th>
                   </tr>
@@ -554,12 +629,12 @@ function OrcamentosTab({ mode = 'orcamentos' }: { mode?: 'orcamentos' | 'vendas'
                 <tbody>
                   {list.map(o => (
                     <tr key={o.id} onClick={() => openDetail(o.numero)} className={cn('border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors', selected?.numero === o.numero && 'bg-indigo-500/10')}>
-                      <td className="p-3 font-mono text-xs text-indigo-300">{o.numero}</td>
-                      <td className="p-3 text-xs text-slate-400">{new Date(o.criado_em).toLocaleString('pt-BR')}</td>
-                      <td className="p-3 text-xs text-slate-300">{o.vendedor_nome || o.vendedor_whatsapp || '—'}</td>
-                      <td className="p-3 text-xs text-slate-300">{o.cliente_nome || '—'}</td>
-                      <td className="p-3 text-xs text-slate-400 text-right">{o.qtd_itens}</td>
-                      <td className="p-3 text-xs text-white text-right font-medium">R$ {fmtBR(o.total)}</td>
+                      <td className="p-3 font-mono text-xs text-indigo-300 whitespace-nowrap">{o.numero}</td>
+                      <td className="p-3 text-xs text-slate-400 hidden sm:table-cell whitespace-nowrap">{new Date(o.criado_em).toLocaleString('pt-BR')}</td>
+                      <td className="p-3 text-xs text-slate-300 hidden md:table-cell">{o.vendedor_nome || o.vendedor_whatsapp || '—'}</td>
+                      <td className="p-3 text-xs text-slate-300 max-w-[160px] truncate">{o.cliente_nome || '—'}</td>
+                      <td className="p-3 text-xs text-slate-400 text-right hidden sm:table-cell">{o.qtd_itens}</td>
+                      <td className="p-3 text-xs text-white text-right font-medium whitespace-nowrap">R$ {fmtBR(o.total)}</td>
                       <td className="p-3 text-center"><span className={cn('text-[10px] font-bold px-2 py-0.5 rounded', statusBadge(o.status))}>{o.status}</span></td>
                     </tr>
                   ))}
@@ -569,7 +644,7 @@ function OrcamentosTab({ mode = 'orcamentos' }: { mode?: 'orcamentos' | 'vendas'
           </div>
         </div>
 
-        <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col">
+        <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col">
           <div className="p-4 border-b border-white/10">
             <h3 className="font-bold text-white text-sm">Detalhe</h3>
           </div>
@@ -739,45 +814,47 @@ function ClientesTab() {
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex justify-between items-end">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-3">
         <div>
-          <h2 className="text-4xl font-bold text-white">Clientes</h2>
-          <p className="text-slate-400 mt-2">Base de clientes da Win. O agente busca esses cadastros pra vincular orçamentos.</p>
+          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white">Clientes</h2>
+          <p className="text-slate-400 mt-2 text-sm sm:text-base">Base de clientes da Win. O agente busca esses cadastros pra vincular orçamentos.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <button onClick={() => load(q)} className="px-4 py-2 bg-white/10 text-white font-bold rounded-xl border border-white/10 hover:bg-white/20 transition-colors text-sm">Atualizar</button>
           <button onClick={openCreate} className="px-4 py-2 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded-xl text-sm font-bold transition-colors shadow-lg shadow-indigo-900/20">+ Novo cliente</button>
         </div>
       </div>
 
-      <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-4 flex gap-2">
+      <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-3 sm:p-4 flex flex-col sm:flex-row gap-2">
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') load(q); }}
-          placeholder="Buscar por nome, fantasia, CPF/CNPJ, telefone, ID externo..."
+          placeholder="Buscar por nome, fantasia, CPF/CNPJ, telefone..."
           className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-slate-500"
         />
-        <button onClick={() => load(q)} className="px-4 py-2 bg-indigo-500/20 border border-indigo-500/30 hover:bg-indigo-500/30 text-indigo-200 text-sm rounded-xl transition-colors">Buscar</button>
-        <button onClick={() => { setQ(''); load(''); }} className="px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-sm rounded-xl transition-colors">Limpar</button>
+        <div className="flex gap-2">
+          <button onClick={() => load(q)} className="flex-1 sm:flex-none px-4 py-2 bg-indigo-500/20 border border-indigo-500/30 hover:bg-indigo-500/30 text-indigo-200 text-sm rounded-xl transition-colors">Buscar</button>
+          <button onClick={() => { setQ(''); load(''); }} className="flex-1 sm:flex-none px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-sm rounded-xl transition-colors">Limpar</button>
+        </div>
       </div>
 
-      <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[58vh]">
+      <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[65vh] sm:h-[58vh]">
         <div className="p-4 border-b border-white/10 flex justify-between items-center">
           <h3 className="font-bold text-white text-sm">{q ? `Resultados para "${q}"` : 'Todos os clientes'}</h3>
           <span className="text-xs text-slate-500">{list.length}</span>
         </div>
         <div className="overflow-auto flex-1">
-          <table className="w-full text-left">
+          <table className="w-full text-left min-w-[640px]">
             <thead className="bg-slate-950/50 sticky top-0 z-10 backdrop-blur-md">
               <tr className="text-[10px] uppercase text-slate-500">
-                <th className="px-4 py-4 font-bold">Nome / Fantasia</th>
-                <th className="px-4 py-4 font-bold">Tipo</th>
-                <th className="px-4 py-4 font-bold">CPF/CNPJ</th>
-                <th className="px-4 py-4 font-bold">Telefone</th>
-                <th className="px-4 py-4 font-bold">Cidade/UF</th>
-                <th className="px-4 py-4 font-bold text-center">Ativo</th>
-                <th className="px-4 py-4 font-bold text-right">Ações</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold">Nome / Fantasia</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden lg:table-cell">Tipo</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden md:table-cell">CPF/CNPJ</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden md:table-cell">Telefone</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden lg:table-cell">Cidade/UF</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold text-center hidden sm:table-cell">Ativo</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold text-right">Ações</th>
               </tr>
             </thead>
             <tbody className="text-sm">
@@ -787,25 +864,28 @@ function ClientesTab() {
                 <tr><td colSpan={7} className="p-8 text-center text-slate-500">Nenhum cliente encontrado.</td></tr>
               ) : list.map(c => (
                 <tr key={c.id} className={cn('border-t border-white/5 hover:bg-white/5 transition-colors', !c.ativo && 'opacity-50')}>
-                  <td className="px-4 py-3">
-                    <p className="text-slate-100 font-medium truncate max-w-xs">{c.nome}</p>
+                  <td className="px-3 sm:px-4 py-3">
+                    <p className="text-slate-100 font-medium truncate max-w-[180px] sm:max-w-xs">{c.nome}</p>
                     {c.fantasia && c.fantasia.toLowerCase() !== String(c.nome).toLowerCase() && (
-                      <p className="text-xs text-slate-500 truncate max-w-xs">{c.fantasia}</p>
+                      <p className="text-xs text-slate-500 truncate max-w-[180px] sm:max-w-xs">{c.fantasia}</p>
                     )}
+                    <p className="text-[10px] text-slate-500 md:hidden mt-0.5">{c.celular || c.fone || c.cpf_cnpj || ''}</p>
                   </td>
-                  <td className="px-4 py-3 text-xs text-slate-400">{c.tipo_pessoa || '—'}</td>
-                  <td className="px-4 py-3 text-xs font-mono text-slate-400">{c.cpf_cnpj || '—'}</td>
-                  <td className="px-4 py-3 text-xs text-slate-400">{c.celular || c.fone || '—'}</td>
-                  <td className="px-4 py-3 text-xs text-slate-400">{c.cidade ? `${c.cidade}${c.uf ? '/' + c.uf : ''}` : '—'}</td>
-                  <td className="px-4 py-3 text-center">
+                  <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden lg:table-cell">{c.tipo_pessoa || '—'}</td>
+                  <td className="px-3 sm:px-4 py-3 text-xs font-mono text-slate-400 hidden md:table-cell">{c.cpf_cnpj || '—'}</td>
+                  <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden md:table-cell">{c.celular || c.fone || '—'}</td>
+                  <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden lg:table-cell">{c.cidade ? `${c.cidade}${c.uf ? '/' + c.uf : ''}` : '—'}</td>
+                  <td className="px-3 sm:px-4 py-3 text-center hidden sm:table-cell">
                     <span className={cn('inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold', c.ativo ? 'bg-green-500/20 text-green-400' : 'bg-slate-500/20 text-slate-400')}>
                       {c.ativo ? 'ATIVO' : 'INATIVO'}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-right space-x-2">
-                    <button onClick={() => openHistorico(c)} className="px-2.5 py-1 text-xs rounded-md bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">Histórico</button>
-                    <button onClick={() => openEdit(c.id)} className="px-2.5 py-1 text-xs rounded-md bg-white/10 hover:bg-white/20 text-white">Editar</button>
-                    {c.ativo && <button onClick={() => desativar(c.id)} className="px-2.5 py-1 text-xs rounded-md bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30">Desativar</button>}
+                  <td className="px-3 sm:px-4 py-3 text-right whitespace-nowrap">
+                    <div className="inline-flex gap-1 sm:gap-2 flex-wrap justify-end">
+                      <button onClick={() => openHistorico(c)} className="px-2.5 py-1 text-xs rounded-md bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">Hist.</button>
+                      <button onClick={() => openEdit(c.id)} className="px-2.5 py-1 text-xs rounded-md bg-white/10 hover:bg-white/20 text-white">Editar</button>
+                      {c.ativo && <button onClick={() => desativar(c.id)} className="px-2.5 py-1 text-xs rounded-md bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 hidden sm:inline">Desativar</button>}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -815,8 +895,8 @@ function ClientesTab() {
       </div>
 
       {historico && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm" onClick={() => setHistorico(null)}>
-          <div className="bg-slate-900 border border-white/10 rounded-3xl max-w-4xl w-full max-h-[85vh] overflow-auto p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-2 sm:p-6 bg-black/60 backdrop-blur-sm safe-pb" onClick={() => setHistorico(null)}>
+          <div className="bg-slate-900 border border-white/10 rounded-3xl max-w-4xl w-full max-h-[92vh] sm:max-h-[85vh] overflow-auto p-4 sm:p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-between items-start mb-4">
               <div>
                 <h3 className="text-2xl font-bold text-white">Histórico do cliente</h3>
@@ -866,8 +946,8 @@ function ClientesTab() {
                 {historico.orcamentos.length === 0 ? (
                   <p className="text-slate-500 text-sm py-8 text-center">Sem orçamentos para este cliente.</p>
                 ) : (
-                  <div className="rounded-2xl bg-white/5 border border-white/10 overflow-hidden">
-                    <table className="w-full text-left text-sm">
+                  <div className="rounded-2xl bg-white/5 border border-white/10 overflow-x-auto">
+                    <table className="w-full text-left text-sm min-w-[560px]">
                       <thead className="bg-slate-950/60 text-[10px] uppercase text-slate-500">
                         <tr>
                           <th className="px-3 py-2 font-bold">Número</th>
@@ -902,13 +982,13 @@ function ClientesTab() {
       )}
 
       {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm" onClick={() => setShowForm(false)}>
-          <div className="bg-slate-900 border border-white/10 rounded-3xl max-w-3xl w-full max-h-[85vh] overflow-auto p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-2 sm:p-6 bg-black/60 backdrop-blur-sm safe-pb" onClick={() => setShowForm(false)}>
+          <div className="bg-slate-900 border border-white/10 rounded-3xl max-w-3xl w-full max-h-[92vh] sm:max-h-[85vh] overflow-auto p-4 sm:p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-2xl font-bold text-white">{editing ? 'Editar cliente' : 'Novo cliente'}</h3>
-              <button onClick={() => setShowForm(false)} className="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+              <h3 className="text-xl sm:text-2xl font-bold text-white">{editing ? 'Editar cliente' : 'Novo cliente'}</h3>
+              <button onClick={() => setShowForm(false)} className="text-slate-400 hover:text-white text-3xl leading-none w-9 h-9 flex items-center justify-center">×</button>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {field('nome', 'Nome *', { wide: true, placeholder: 'Obrigatório' })}
               {field('fantasia', 'Fantasia / nome de tela', { wide: true })}
               <div>
@@ -942,11 +1022,11 @@ function ClientesTab() {
                 />
               </div>
             </div>
-            <div className="flex items-center justify-between mt-5 pt-4 border-t border-white/10">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mt-5 pt-4 border-t border-white/10">
               <div className={cn('text-sm font-medium', message.startsWith('Erro') ? 'text-rose-400' : 'text-emerald-400')}>{message}</div>
               <div className="flex gap-2">
-                <button onClick={() => setShowForm(false)} className="px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-sm rounded-xl">Cancelar</button>
-                <button onClick={save} disabled={saving} className="px-5 py-2 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded-xl text-sm font-bold disabled:opacity-50">{saving ? 'Salvando...' : (editing ? 'Salvar alterações' : 'Cadastrar')}</button>
+                <button onClick={() => setShowForm(false)} className="flex-1 sm:flex-none px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-sm rounded-xl">Cancelar</button>
+                <button onClick={save} disabled={saving} className="flex-1 sm:flex-none px-5 py-2 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded-xl text-sm font-bold disabled:opacity-50">{saving ? 'Salvando...' : (editing ? 'Salvar alterações' : 'Cadastrar')}</button>
               </div>
             </div>
           </div>
@@ -1009,11 +1089,11 @@ function SettingsTab() {
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div>
-        <h2 className="text-4xl font-bold text-white">Configurações do Agente IA</h2>
-        <p className="text-slate-400 mt-2">Edite as diretrizes de comportamento do assistente virtual.</p>
+        <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white">Configurações do Agente IA</h2>
+        <p className="text-slate-400 mt-2 text-sm sm:text-base">Edite as diretrizes de comportamento do assistente virtual.</p>
       </div>
 
-      <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-6 space-y-6 shadow-sm">
+      <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-4 sm:p-6 space-y-6 shadow-sm">
         <div>
           <label className="block text-xs uppercase tracking-widest text-slate-500 font-bold mb-2">Core Prompt (Regras Estritas)</label>
           <div className="bg-yellow-500/10 text-yellow-500 text-sm p-3 rounded-xl border border-yellow-500/20 mb-3 font-medium">
@@ -1039,7 +1119,7 @@ function SettingsTab() {
           />
         </div>
 
-        <div className="pt-4 flex items-center justify-between border-t border-white/10">
+        <div className="pt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-t border-white/10">
           <div className="text-sm font-medium text-green-400">{message}</div>
           <button onClick={handleSave} disabled={saving} className="bg-white text-slate-950 px-6 py-2 rounded-xl font-bold hover:scale-105 active:scale-95 transition-transform disabled:opacity-50 disabled:hover:scale-100 text-sm">
             {saving ? 'Salvando...' : 'Salvar Configurações'}
@@ -1047,7 +1127,7 @@ function SettingsTab() {
         </div>
       </div>
 
-      <div className="rounded-3xl bg-slate-950/50 backdrop-blur-xl border border-white/10 p-6 space-y-4">
+      <div className="rounded-2xl sm:rounded-3xl bg-slate-950/50 backdrop-blur-xl border border-white/10 p-4 sm:p-6 space-y-4">
         <div>
           <h3 className="font-bold text-white flex items-center">
             <MessageSquare size={18} className="mr-2 text-indigo-400" />
@@ -1055,11 +1135,11 @@ function SettingsTab() {
           </h3>
           <p className="text-sm text-slate-400 mt-1">Configura a URL deste painel como webhook na instância Evolution API para receber mensagens.</p>
         </div>
-        <div className="flex items-center space-x-4 border-t border-white/10 pt-4">
-          <button onClick={handleSetupWebhook} className="bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 px-4 py-2 rounded-xl text-sm font-bold hover:bg-indigo-600/30 transition-colors">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 border-t border-white/10 pt-4">
+          <button onClick={handleSetupWebhook} className="bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 px-4 py-2 rounded-xl text-sm font-bold hover:bg-indigo-600/30 transition-colors self-start">
             Configurar Webhook Agora
           </button>
-          <span className={cn('text-sm font-medium', webhookStatus.startsWith('Erro') ? 'text-red-400' : 'text-slate-400')}>{webhookStatus}</span>
+          <span className={cn('text-sm font-medium break-words', webhookStatus.startsWith('Erro') ? 'text-red-400' : 'text-slate-400')}>{webhookStatus}</span>
         </div>
       </div>
     </div>
@@ -1142,33 +1222,33 @@ function UsersTab({ currentUserId }: { currentUserId: string }) {
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex justify-between items-end">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-3">
         <div>
-          <h2 className="text-4xl font-bold text-white">Usuários</h2>
-          <p className="text-slate-400 mt-2">Crie sub-logins para o painel, defina permissões e vincule a vendedores.</p>
+          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white">Usuários</h2>
+          <p className="text-slate-400 mt-2 text-sm sm:text-base">Crie sub-logins para o painel, defina permissões e vincule a vendedores.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <button onClick={load} className="px-4 py-2 bg-white/10 text-white font-bold rounded-xl border border-white/10 hover:bg-white/20 transition-colors text-sm">Atualizar</button>
           <button onClick={openCreate} className="px-4 py-2 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded-xl text-sm font-bold transition-colors shadow-lg shadow-indigo-900/20">+ Novo usuário</button>
         </div>
       </div>
 
-      <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[68vh]">
+      <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[70vh] lg:h-[68vh]">
         <div className="p-4 border-b border-white/10 flex justify-between items-center">
           <h3 className="font-bold text-white text-sm">Usuários do painel</h3>
           <span className="text-xs text-slate-500">{list.length}</span>
         </div>
         <div className="overflow-auto flex-1">
-          <table className="w-full text-left">
+          <table className="w-full text-left min-w-[640px]">
             <thead className="bg-slate-950/50 sticky top-0 z-10 backdrop-blur-md">
               <tr className="text-[10px] uppercase text-slate-500">
-                <th className="px-4 py-4 font-bold">Nome / E-mail</th>
-                <th className="px-4 py-4 font-bold">Role</th>
-                <th className="px-4 py-4 font-bold">Vendedor</th>
-                <th className="px-4 py-4 font-bold">Permissões</th>
-                <th className="px-4 py-4 font-bold">Último login</th>
-                <th className="px-4 py-4 font-bold text-center">Status</th>
-                <th className="px-4 py-4 font-bold text-right">Ações</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold">Nome / E-mail</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold">Role</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden md:table-cell">Vendedor</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden lg:table-cell">Permissões</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden xl:table-cell">Último login</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold text-center hidden sm:table-cell">Status</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold text-right">Ações</th>
               </tr>
             </thead>
             <tbody className="text-sm">
@@ -1178,32 +1258,34 @@ function UsersTab({ currentUserId }: { currentUserId: string }) {
                 <tr><td colSpan={7} className="p-8 text-center text-slate-500">Nenhum usuário cadastrado.</td></tr>
               ) : list.map(u => (
                 <tr key={u.id} className={cn('border-t border-white/5 hover:bg-white/5 transition-colors', !u.ativo && 'opacity-50')}>
-                  <td className="px-4 py-3">
-                    <p className="text-slate-100 font-medium">{u.nome}</p>
-                    <p className="text-xs text-slate-500">{u.email}</p>
+                  <td className="px-3 sm:px-4 py-3">
+                    <p className="text-slate-100 font-medium truncate max-w-[180px]">{u.nome}</p>
+                    <p className="text-xs text-slate-500 truncate max-w-[180px]">{u.email}</p>
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 sm:px-4 py-3">
                     <span className={cn('inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold', u.role === 'admin' ? 'bg-indigo-500/20 text-indigo-300' : 'bg-slate-500/20 text-slate-300')}>
                       {u.role === 'admin' ? 'ADMIN' : 'SUB'}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-xs text-slate-400">{u.vendedor_nome || '—'}</td>
-                  <td className="px-4 py-3 text-xs text-slate-400">
+                  <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden md:table-cell">{u.vendedor_nome || '—'}</td>
+                  <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden lg:table-cell">
                     {u.role === 'admin' ? <span className="italic">Acesso total</span> : `${u.permissions?.length || 0} permissão(ões)`}
                   </td>
-                  <td className="px-4 py-3 text-xs text-slate-400">{u.ultimo_login ? new Date(u.ultimo_login).toLocaleString('pt-BR') : 'nunca'}</td>
-                  <td className="px-4 py-3 text-center">
+                  <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden xl:table-cell whitespace-nowrap">{u.ultimo_login ? new Date(u.ultimo_login).toLocaleString('pt-BR') : 'nunca'}</td>
+                  <td className="px-3 sm:px-4 py-3 text-center hidden sm:table-cell">
                     <span className={cn('inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold', u.ativo ? 'bg-green-500/20 text-green-400' : 'bg-slate-500/20 text-slate-400')}>
                       {u.ativo ? 'ATIVO' : 'INATIVO'}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
-                    <button onClick={() => openEdit(u)} className="px-2.5 py-1 text-xs rounded-md bg-white/10 hover:bg-white/20 text-white">Editar</button>
-                    {u.id !== currentUserId && (
-                      <button onClick={() => toggleAtivo(u)} className={cn('px-2.5 py-1 text-xs rounded-md border', u.ativo ? 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border-rose-500/30' : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border-emerald-500/30')}>
-                        {u.ativo ? 'Desativar' : 'Ativar'}
-                      </button>
-                    )}
+                  <td className="px-3 sm:px-4 py-3 text-right whitespace-nowrap">
+                    <div className="inline-flex gap-1 sm:gap-2 flex-wrap justify-end">
+                      <button onClick={() => openEdit(u)} className="px-2.5 py-1 text-xs rounded-md bg-white/10 hover:bg-white/20 text-white">Editar</button>
+                      {u.id !== currentUserId && (
+                        <button onClick={() => toggleAtivo(u)} className={cn('px-2.5 py-1 text-xs rounded-md border hidden sm:inline', u.ativo ? 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border-rose-500/30' : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border-emerald-500/30')}>
+                          {u.ativo ? 'Desativar' : 'Ativar'}
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -1321,14 +1403,14 @@ function UserFormModal({
   const isSelf = isEdit && editing!.id === currentUserId;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-slate-900 border border-white/10 rounded-3xl max-w-3xl w-full max-h-[88vh] overflow-auto p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-2 sm:p-6 bg-black/60 backdrop-blur-sm safe-pb" onClick={onClose}>
+      <div className="bg-slate-900 border border-white/10 rounded-3xl max-w-3xl w-full max-h-[92vh] sm:max-h-[88vh] overflow-auto p-4 sm:p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-4">
-          <h3 className="text-2xl font-bold text-white">{isEdit ? 'Editar usuário' : 'Novo usuário'}</h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-white text-2xl leading-none">×</button>
+          <h3 className="text-xl sm:text-2xl font-bold text-white">{isEdit ? 'Editar usuário' : 'Novo usuário'}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-white text-3xl leading-none w-9 h-9 flex items-center justify-center">×</button>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="col-span-2">
             <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1">Nome *</label>
             <input value={nome} onChange={(e) => setNome(e.target.value)} className="w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl text-sm text-white focus:ring-2 focus:ring-indigo-500" />
@@ -1464,11 +1546,11 @@ function UserFormModal({
           )}
         </div>
 
-        <div className="flex items-center justify-between mt-5 pt-4 border-t border-white/10">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mt-5 pt-4 border-t border-white/10">
           <div className="text-sm font-medium text-rose-400">{error}</div>
           <div className="flex gap-2">
-            <button onClick={onClose} className="px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-sm rounded-xl">Cancelar</button>
-            <button onClick={save} disabled={saving} className="px-5 py-2 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded-xl text-sm font-bold disabled:opacity-50">
+            <button onClick={onClose} className="flex-1 sm:flex-none px-4 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 text-sm rounded-xl">Cancelar</button>
+            <button onClick={save} disabled={saving} className="flex-1 sm:flex-none px-5 py-2 bg-indigo-600/80 hover:bg-indigo-600 text-white rounded-xl text-sm font-bold disabled:opacity-50">
               {saving ? 'Salvando...' : (isEdit ? 'Salvar alterações' : 'Criar usuário')}
             </button>
           </div>
@@ -1551,10 +1633,10 @@ function DashboardTab() {
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-      <div className="flex items-end justify-between flex-wrap gap-4">
+      <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
         <div>
-          <h2 className="text-4xl font-bold text-white">Dashboard</h2>
-          <p className="text-slate-400 mt-2">Visão executiva: faturamento, ranking, produtos, clientes, funil e custo de IA.</p>
+          <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white">Dashboard</h2>
+          <p className="text-slate-400 mt-2 text-sm sm:text-base">Visão executiva: faturamento, ranking, produtos, clientes, funil e custo de IA.</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           {(['hoje', '7d', 'mes', '30d'] as PeriodPreset[]).map(p => (
@@ -1566,12 +1648,12 @@ function DashboardTab() {
               {p === 'hoje' ? 'Hoje' : p === '7d' ? '7 dias' : p === 'mes' ? 'Este mês' : '30 dias'}
             </button>
           ))}
-          <div className="flex items-center gap-1 ml-2 pl-2 border-l border-white/10">
+          <div className="flex items-center gap-1 w-full sm:w-auto sm:ml-2 sm:pl-2 sm:border-l sm:border-white/10">
             <input type="date" value={customDe} onChange={e => { setCustomDe(e.target.value); setUseCustom(true); }}
-              className="bg-white/5 border border-white/10 text-slate-200 text-xs rounded-xl px-2 py-2" />
+              className="flex-1 sm:flex-none bg-white/5 border border-white/10 text-slate-200 text-xs rounded-xl px-2 py-2" />
             <span className="text-slate-500 text-xs">→</span>
             <input type="date" value={customAte} onChange={e => { setCustomAte(e.target.value); setUseCustom(true); }}
-              className="bg-white/5 border border-white/10 text-slate-200 text-xs rounded-xl px-2 py-2" />
+              className="flex-1 sm:flex-none bg-white/5 border border-white/10 text-slate-200 text-xs rounded-xl px-2 py-2" />
           </div>
         </div>
       </div>
@@ -1646,30 +1728,30 @@ function DashboardTab() {
         {!ranking ? <Skeleton /> : ranking.rows.length === 0 ? (
           <p className="text-sm text-slate-500">Sem orçamentos no período.</p>
         ) : (
-          <div className="overflow-auto">
-            <table className="w-full text-sm">
+          <div className="overflow-x-auto -mx-2 sm:mx-0">
+            <table className="w-full text-sm min-w-[640px]">
               <thead className="text-[10px] uppercase text-slate-500">
                 <tr>
-                  <th className="text-left py-2 font-bold">Vendedor</th>
-                  <th className="text-right py-2 font-bold">Faturamento</th>
-                  <th className="text-right py-2 font-bold">Vendas</th>
-                  <th className="text-right py-2 font-bold">Ticket médio</th>
-                  <th className="text-right py-2 font-bold">Conversão</th>
-                  <th className="text-right py-2 font-bold">Tempo médio</th>
+                  <th className="text-left py-2 px-2 sm:px-0 font-bold">Vendedor</th>
+                  <th className="text-right py-2 px-2 sm:px-0 font-bold">Faturamento</th>
+                  <th className="text-right py-2 px-2 sm:px-0 font-bold">Vendas</th>
+                  <th className="text-right py-2 px-2 sm:px-0 font-bold hidden md:table-cell">Ticket médio</th>
+                  <th className="text-right py-2 px-2 sm:px-0 font-bold hidden sm:table-cell">Conversão</th>
+                  <th className="text-right py-2 px-2 sm:px-0 font-bold hidden lg:table-cell">Tempo médio</th>
                 </tr>
               </thead>
               <tbody>
                 {ranking.rows.map((r: any) => (
                   <tr key={r.vendedor_id} className="border-t border-white/5">
-                    <td className="py-2">
-                      <p className="text-slate-200 font-medium">{r.vendedor_nome || '(sem nome)'}</p>
+                    <td className="py-2 px-2 sm:px-0">
+                      <p className="text-slate-200 font-medium truncate max-w-[200px]">{r.vendedor_nome || '(sem nome)'}</p>
                       <p className="text-[10px] text-slate-500 font-mono">{r.vendedor_whatsapp}</p>
                     </td>
-                    <td className="py-2 text-right text-slate-200 font-semibold">{fmtBRL(r.faturamento_brl)}</td>
-                    <td className="py-2 text-right text-slate-300">{r.num_vendas}/{r.num_orcamentos}</td>
-                    <td className="py-2 text-right text-slate-300">{fmtBRL(r.ticket_medio_brl)}</td>
-                    <td className="py-2 text-right text-slate-300">{fmtPct(r.conversao)}</td>
-                    <td className="py-2 text-right text-slate-400 text-xs">
+                    <td className="py-2 px-2 sm:px-0 text-right text-slate-200 font-semibold whitespace-nowrap">{fmtBRL(r.faturamento_brl)}</td>
+                    <td className="py-2 px-2 sm:px-0 text-right text-slate-300 whitespace-nowrap">{r.num_vendas}/{r.num_orcamentos}</td>
+                    <td className="py-2 px-2 sm:px-0 text-right text-slate-300 whitespace-nowrap hidden md:table-cell">{fmtBRL(r.ticket_medio_brl)}</td>
+                    <td className="py-2 px-2 sm:px-0 text-right text-slate-300 hidden sm:table-cell">{fmtPct(r.conversao)}</td>
+                    <td className="py-2 px-2 sm:px-0 text-right text-slate-400 text-xs hidden lg:table-cell">
                       {r.tempo_medio_fechamento_horas != null ? `${r.tempo_medio_fechamento_horas.toFixed(1)} h` : '—'}
                     </td>
                   </tr>
@@ -1761,11 +1843,11 @@ function DashboardTab() {
 
 function KpiCard({ icon, label, value, hint, loading }: { icon: React.ReactNode; label: string; value: string; hint?: string; loading?: boolean }) {
   return (
-    <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-5">
+    <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-4 sm:p-5">
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-slate-400 font-bold">
         {icon}<span>{label}</span>
       </div>
-      <p className={cn('text-2xl font-bold text-white mt-2', loading && 'opacity-30')}>{value}</p>
+      <p className={cn('text-xl sm:text-2xl font-bold text-white mt-2 break-words', loading && 'opacity-30')}>{value}</p>
       {hint && <p className="text-[10px] text-slate-500 mt-1">{hint}</p>}
     </div>
   );
@@ -1773,7 +1855,7 @@ function KpiCard({ icon, label, value, hint, loading }: { icon: React.ReactNode;
 
 function Section({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-5">
+    <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-4 sm:p-5">
       <div className="mb-4">
         <h3 className="text-base font-bold text-white">{title}</h3>
         {subtitle && <p className="text-xs text-slate-400 mt-0.5">{subtitle}</p>}
