@@ -17,6 +17,7 @@ import {
 } from '../services/intents.js';
 import { getKpis } from '../services/dashboard.js';
 import { getUltimosPrecosVendedor, compararPreco, type VariacaoPreco } from '../services/precos.js';
+import { debounceMensagem } from '../services/message-buffer.js';
 import {
   EXTRACT_INTENT_PROMPT,
   buildAlteracaoBlock,
@@ -412,6 +413,23 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
       await pool.query(`UPDATE sessoes SET acao_pendente = NULL WHERE id = $1`, [currentSessionId]);
     }
 
+    // Grava a user message AGORA — antes do debounce — pra que ela já apareça
+    // no histórico que o LLM vai ler. Quando várias mensagens chegam em rajada,
+    // a invocação "vencedora" do debounce vê todas elas via SELECT do banco.
+    const { rows: minhaMsgRows } = await pool.query(
+      `INSERT INTO mensagens (sessao_id, vendedor_id, papel, conteudo, tipo_midia)
+       VALUES ($1, $2, 'user', $3, $4) RETURNING id`,
+      [currentSessionId, vendedorId, incomingText, tipoMidia]
+    );
+    let minhaMsgId: string = minhaMsgRows[0].id;
+
+    // Debounce: se chegar outra mensagem deste vendedor antes de N segundos,
+    // esta invocação desiste — a próxima processa o lote completo. Ver
+    // api/services/message-buffer.ts pra detalhes.
+    const bufferSeconds = Number(config.message_buffer_seconds ?? 5);
+    const sigo = await debounceMensagem(vendedorId, bufferSeconds);
+    if (!sigo) return;
+
     // Extrator: gpt-4.1 JSON strict, temperature 0
     const { rows: historicoRows } = await pool.query(
       `SELECT papel as role, conteudo FROM mensagens WHERE sessao_id = $1 ORDER BY criado_em ASC`,
@@ -430,7 +448,6 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
       messages: [
         { role: 'system', content: EXTRACT_INTENT_PROMPT },
         ...historyMessages,
-        { role: 'user', content: incomingText },
       ],
     }, { vendedorId, sessaoId: currentSessionId, purpose: 'extract' });
 
@@ -460,12 +477,13 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
         `INSERT INTO sessoes (vendedor_id) VALUES ($1) RETURNING id`,
         [vendedorId]
       );
-      currentSessionId = newSessionRows[0].id;
-      historyMessages = [];
+      const novaSessaoId = newSessionRows[0].id;
+      // Move a mensagem do user (já gravada antes do debounce) pra nova sessão,
+      // pra ela não ficar órfã na sessão encerrada.
+      await pool.query(`UPDATE mensagens SET sessao_id = $1 WHERE id = $2`, [novaSessaoId, minhaMsgId]);
+      currentSessionId = novaSessaoId;
+      historyMessages = [{ role: 'user', content: incomingText }];
     }
-
-    await gravarMensagem(currentSessionId!, vendedorId, 'user', incomingText, tipoMidia);
-    historyMessages.push({ role: 'user', content: incomingText });
 
     // Roteamento determinístico para intents administrativas
 

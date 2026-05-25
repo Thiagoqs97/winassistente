@@ -52,6 +52,7 @@ async function initDB(): Promise<void> {
       );
     `);
     await client.query(`ALTER TABLE system_config ADD COLUMN IF NOT EXISTS session_timeout_hours INTEGER DEFAULT 2;`);
+    await client.query(`ALTER TABLE system_config ADD COLUMN IF NOT EXISTS message_buffer_seconds INTEGER DEFAULT 5;`);
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS vendedores (
@@ -89,6 +90,21 @@ async function initDB(): Promise<void> {
 
     await client.query(`ALTER TABLE sessoes DISABLE ROW LEVEL SECURITY;`);
     await client.query(`ALTER TABLE mensagens DISABLE ROW LEVEL SECURITY;`);
+
+    // Buffer de mensagens para debounce no webhook. Quando o vendedor manda
+    // várias mensagens em rápida sucessão (típico em pedidos com várias
+    // imagens), só a última do "lote" dispara o processamento pelo LLM.
+    // Mais detalhes em api/services/message-buffer.ts.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS mensagens_buffer (
+        seq BIGSERIAL PRIMARY KEY,
+        vendedor_id UUID NOT NULL REFERENCES vendedores(id) ON DELETE CASCADE,
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        processada_em TIMESTAMP
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_mensagens_buffer_vendedor_pendente
+      ON mensagens_buffer(vendedor_id, seq) WHERE processada_em IS NULL;`);
 
     await client.query(`CREATE SEQUENCE IF NOT EXISTS orcamento_numero_seq START 1;`);
 

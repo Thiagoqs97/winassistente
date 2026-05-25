@@ -1037,7 +1037,7 @@ function ClientesTab() {
 }
 
 function SettingsTab() {
-  const [config, setConfig] = useState({ core_prompt: '', session_timeout_hours: 2 });
+  const [config, setConfig] = useState({ core_prompt: '', session_timeout_hours: 2, message_buffer_seconds: 5 });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
   const [webhookStatus, setWebhookStatus] = useState('');
@@ -1115,6 +1115,19 @@ function SettingsTab() {
             min="1"
             value={config.session_timeout_hours}
             onChange={(e) => setConfig({ ...config, session_timeout_hours: parseInt(e.target.value) || 2 })}
+            className="w-full max-w-sm px-4 py-2 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono text-slate-300"
+          />
+        </div>
+
+        <div>
+          <label className="block text-xs uppercase tracking-widest text-slate-500 font-bold mb-2">Buffer de Mensagens (Segundos)</label>
+          <p className="text-xs text-slate-400 mb-3">Quando o vendedor manda várias mensagens em sequência (ex: várias imagens), o sistema espera este tempo após a última pra processar tudo como um contexto único — evita respostas repetidas e economiza chamadas de IA. Use 0 pra desligar. Máximo: 30s. Padrão: 5s.</p>
+          <input
+            type="number"
+            min="0"
+            max="30"
+            value={config.message_buffer_seconds}
+            onChange={(e) => setConfig({ ...config, message_buffer_seconds: Math.max(0, Math.min(30, parseInt(e.target.value) || 0)) })}
             className="w-full max-w-sm px-4 py-2 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono text-slate-300"
           />
         </div>

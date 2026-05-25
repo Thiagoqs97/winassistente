@@ -16,11 +16,19 @@ configRouter.get('/config', requirePermission('config.view'), async (_req, res) 
 });
 
 configRouter.put('/config', requirePermission('config.edit'), async (req, res) => {
-  const { core_prompt, session_timeout_hours } = req.body;
+  const { core_prompt, session_timeout_hours, message_buffer_seconds } = req.body;
+  // Buffer clampado em [0, 30] — 0 desliga, 30 é teto pra não estourar timeout do webhook
+  const buffer = message_buffer_seconds === undefined || message_buffer_seconds === null
+    ? null
+    : Math.max(0, Math.min(30, Number(message_buffer_seconds)));
   try {
     const { rows } = await pool.query(
-      `UPDATE system_config SET core_prompt = $1, session_timeout_hours = $2 WHERE id = 'default' RETURNING *`,
-      [core_prompt, session_timeout_hours]
+      `UPDATE system_config
+       SET core_prompt = $1,
+           session_timeout_hours = $2,
+           message_buffer_seconds = COALESCE($3, message_buffer_seconds)
+       WHERE id = 'default' RETURNING *`,
+      [core_prompt, session_timeout_hours, buffer]
     );
     res.json(rows[0]);
   } catch (err) {
