@@ -96,6 +96,31 @@ async function replyAndLog(senderNumber: string, sessaoId: string, vendedorId: s
   await gravarMensagem(sessaoId, vendedorId, 'assistant', text, 'texto');
 }
 
+// Junta sequências de mensagens 'user' (sem 'assistant' entre elas) em uma
+// única mensagem, com conteúdos separados por \n\n. Mantém todas as
+// 'assistant' como estão. Aplicado em todo histórico — não só no final —
+// pois rajadas podem ter acontecido em qualquer ponto.
+function colapsarUserConsecutivas(rows: Array<{ role: string; conteudo: string }>): any[] {
+  const out: any[] = [];
+  let buffer: string[] = [];
+  const flush = () => {
+    if (buffer.length > 0) {
+      out.push({ role: 'user', content: buffer.join('\n\n') });
+      buffer = [];
+    }
+  };
+  for (const r of rows) {
+    if (r.role === 'user') {
+      buffer.push(r.conteudo);
+    } else {
+      flush();
+      out.push({ role: r.role, content: r.conteudo });
+    }
+  }
+  flush();
+  return out;
+}
+
 webhookRouter.post('/webhook/evolution', async (req, res) => {
   const event = req.body;
 
@@ -436,10 +461,11 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
       [currentSessionId]
     );
 
-    let historyMessages: any[] = historicoRows.map(row => ({
-      role: row.role,
-      content: row.conteudo,
-    }));
+    // Colapsa mensagens 'user' consecutivas em uma única (separadas por \n\n).
+    // Crítico quando o debounce do webhook acumulou várias mensagens em rajada
+    // (ex: 3 imagens em sequência) — sem colapso o LLM tende a responder só à
+    // última, em vez de tratar como um pedido agregado.
+    let historyMessages: any[] = colapsarUserConsecutivas(historicoRows);
 
     const extractResponse = await chatComplete({
       model: 'gpt-4.1',
@@ -478,11 +504,29 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
         [vendedorId]
       );
       const novaSessaoId = newSessionRows[0].id;
-      // Move a mensagem do user (já gravada antes do debounce) pra nova sessão,
-      // pra ela não ficar órfã na sessão encerrada.
-      await pool.query(`UPDATE mensagens SET sessao_id = $1 WHERE id = $2`, [novaSessaoId, minhaMsgId]);
+      // Move TODAS as mensagens 'user' do lote atual (sem assistant respondendo
+      // ainda) pra nova sessão, pra elas não ficarem órfãs. Usa critério
+      // temporal: tudo da sessão atual com criado_em >= a primeira user-msg
+      // após a última assistant.
+      await pool.query(
+        `UPDATE mensagens
+         SET sessao_id = $1
+         WHERE sessao_id = $2
+           AND papel = 'user'
+           AND criado_em > COALESCE(
+             (SELECT MAX(criado_em) FROM mensagens WHERE sessao_id = $2 AND papel = 'assistant'),
+             'epoch'::timestamp
+           )`,
+        [novaSessaoId, currentSessionId]
+      );
       currentSessionId = novaSessaoId;
-      historyMessages = [{ role: 'user', content: incomingText }];
+      // Re-lê o histórico já colapsado (na nova sessão só vão estar as user
+      // messages do lote atual).
+      const { rows: novosRows } = await pool.query(
+        `SELECT papel as role, conteudo FROM mensagens WHERE sessao_id = $1 ORDER BY criado_em ASC`,
+        [currentSessionId]
+      );
+      historyMessages = colapsarUserConsecutivas(novosRows);
     }
 
     // Roteamento determinístico para intents administrativas
