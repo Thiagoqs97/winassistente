@@ -159,7 +159,9 @@ productsRouter.post('/upload-stock', requirePermission('products.import'), async
 
 productsRouter.get('/products', requirePermission('products.view'), async (_req, res) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM products ORDER BY id DESC LIMIT 500');
+    // Sem LIMIT — o painel filtra client-side e precisa ver todo o estoque.
+    // Pra bases muito grandes (>50k), futura paginação server-side resolve.
+    const { rows } = await pool.query('SELECT * FROM products ORDER BY id DESC');
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Database error' });
