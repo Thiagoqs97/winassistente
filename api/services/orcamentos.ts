@@ -1,25 +1,29 @@
 import { pool } from '../db/pool.js';
 import { logger } from '../lib/logger.js';
-import { sendWhatsAppMessage, sendWhatsAppDocument } from './whatsapp.js';
+import { sendWhatsAppMessage, sendWhatsAppImage } from './whatsapp.js';
 import { searchClientes, type ClienteMatch } from './search.js';
 import { formatListaClientes } from './intents.js';
-import { generateOrcamentoPDF } from './pdf.js';
+import { generateOrcamentoImages } from './imagem-orcamento.js';
 
 const fmtBR = (n: number) => n.toFixed(2).replace('.', ',');
 
-// Envia o PDF do orçamento como anexo. Best-effort: log e segue se falhar.
+// Envia o orçamento como imagem(s) PNG. Best-effort: log e segue se falhar.
 // Não bloqueia o fluxo principal — o texto com o orçamento já foi entregue.
-async function enviarPdfAnexo(numero: string, senderNumber: string): Promise<void> {
+// Pode emitir múltiplas imagens quando o orçamento é longo (paginação ~15 itens).
+async function enviarImagensOrcamento(numero: string, senderNumber: string): Promise<void> {
   try {
-    const pdf = await generateOrcamentoPDF(numero);
-    await sendWhatsAppDocument({
-      number: senderNumber,
-      buffer: pdf,
-      fileName: `${numero}.pdf`,
-      mimetype: 'application/pdf',
-    });
+    const imagens = await generateOrcamentoImages(numero);
+    for (let i = 0; i < imagens.length; i++) {
+      const sufixo = imagens.length > 1 ? `-p${i + 1}` : '';
+      await sendWhatsAppImage({
+        number: senderNumber,
+        buffer: imagens[i],
+        fileName: `${numero}${sufixo}.png`,
+        mimetype: 'image/png',
+      });
+    }
   } catch (err: any) {
-    logger.error('Failed to send PDF attachment', { numero, err: err?.message });
+    logger.error('Failed to send orcamento images', { numero, err: err?.message });
   }
 }
 
@@ -110,7 +114,7 @@ export async function gravarOrcamento(opts: {
       [currentSessionId, vendedorId, 'assistant', replyText, 'texto']
     );
     logger.info('orcamento alterado', { numero: numeroAlvo, total, itens: itens.length, cliente_id: clienteId });
-    await enviarPdfAnexo(numeroAlvo, senderNumber);
+    await enviarImagensOrcamento(numeroAlvo, senderNumber);
     return { numero: numeroAlvo, replyText };
   }
 
@@ -138,7 +142,7 @@ export async function gravarOrcamento(opts: {
     [currentSessionId, vendedorId, 'assistant', replyText, 'texto']
   );
   logger.info('orcamento criado', { numero, total, itens: itens.length, cliente_id: clienteId });
-  await enviarPdfAnexo(numero, senderNumber);
+  await enviarImagensOrcamento(numero, senderNumber);
   return { numero, replyText };
 }
 

@@ -49,3 +49,37 @@ export async function sendWhatsAppDocument(opts: {
     return false;
   }
 }
+
+// Envia uma imagem (PNG/JPG) via Evolution. WhatsApp renderiza inline na
+// conversa (preview), diferente do document que vira anexo com ícone.
+// Best-effort, mesma política do sendWhatsAppDocument.
+export async function sendWhatsAppImage(opts: {
+  number: string;
+  buffer: Buffer;
+  fileName: string;
+  mimetype?: string;
+  caption?: string;
+}): Promise<boolean> {
+  try {
+    await axios.post(
+      `${process.env.EVO_URL}/message/sendMedia/${process.env.EVO_INSTANCE}`,
+      {
+        number: opts.number,
+        mediatype: 'image',
+        mimetype: opts.mimetype || 'image/png',
+        fileName: opts.fileName,
+        media: opts.buffer.toString('base64'),
+        caption: opts.caption,
+      },
+      { headers: { apikey: process.env.EVO_APIKEY } }
+    );
+    return true;
+  } catch (err: any) {
+    logger.error('Failed to send WhatsApp image', {
+      number: opts.number,
+      fileName: opts.fileName,
+      err: err?.response?.data || err?.message,
+    });
+    return false;
+  }
+}

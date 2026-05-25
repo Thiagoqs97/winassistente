@@ -56,8 +56,10 @@ Variáveis em `.env` (modelo em `.env.example`):
 | REST do painel | `api/routes/{products,clientes,orcamentos,vendedores,config,setup}.ts` |
 | Endpoints do dashboard BI (Fase 2) | `api/routes/dashboard.ts` + `api/services/dashboard.ts` |
 | Histórico do cliente (Fase 3.1) | `GET /api/clientes/:id/historico` em `api/routes/clientes.ts` |
-| Gerador de PDF do orçamento (Fase 3.2) | `api/services/pdf.ts` (PDFKit) + endpoint `GET /api/orcamentos/:numero/pdf` |
-| Envio de documento via Evolution (Fase 4 — 5.1) | `sendWhatsAppDocument` em `api/services/whatsapp.ts` |
+| Gerador de PDF do orçamento (download no painel) | `api/services/pdf.ts` (PDFKit) + endpoint `GET /api/orcamentos/:numero/pdf` |
+| Gerador de imagem(s) PNG do orçamento (anexo do WhatsApp) | `api/services/imagem-orcamento.ts` (Satori + @resvg/resvg-js); paginação ~15 itens/PNG; fontes em `public/fonts/inter-{400,700}.woff` |
+| Envio de documento via Evolution | `sendWhatsAppDocument` em `api/services/whatsapp.ts` |
+| Envio de imagem inline via Evolution | `sendWhatsAppImage` em `api/services/whatsapp.ts` |
 | Comandos slash `/ajuda` e `/status` (Fase 4 — 5.2/5.3) | `parseComandoSlash` em `api/services/intents.ts`; pré-handlers em `api/routes/webhook.ts` |
 | Histórico do cliente no WhatsApp (Fase 4 — 5.4) | intent `historico_cliente` no extractor + handler em `api/routes/webhook.ts` |
 | Alerta de variação de preço (Fase 4 — 5.5) | `api/services/precos.ts` + injeção em `buildStockContext` em `api/agents/prompts.ts` |
