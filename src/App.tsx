@@ -309,6 +309,10 @@ function ImportTab() {
 function ProductsTab() {
   const [products, setProducts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState('');
+  const [marca, setMarca] = useState<string>('');
+  const [categoria, setCategoria] = useState<string>('');
+  const [statusFiltro, setStatusFiltro] = useState<'todos' | 'ativo' | 'inativo'>('todos');
 
   useEffect(() => { fetchProducts(); }, []);
 
@@ -328,6 +332,39 @@ function ProductsTab() {
     } catch (e) { console.error(e); }
   };
 
+  const marcas = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of products) if (p.marca) set.add(String(p.marca));
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [products]);
+
+  const categorias = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of products) if (p.categoria) set.add(String(p.categoria));
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [products]);
+
+  const normalizar = (s: any) => String(s ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+
+  const filtered = useMemo(() => {
+    const q = normalizar(query.trim());
+    return products.filter(p => {
+      if (statusFiltro === 'ativo' && !p.ativo) return false;
+      if (statusFiltro === 'inativo' && p.ativo) return false;
+      if (marca && p.marca !== marca) return false;
+      if (categoria && p.categoria !== categoria) return false;
+      if (q) {
+        const haystack = [p.codigo, p.descricao, p.codigo_barras, p.marca, p.categoria, p.embalagem]
+          .map(normalizar).join(' ');
+        if (!haystack.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [products, query, marca, categoria, statusFiltro]);
+
+  const limparFiltros = () => { setQuery(''); setMarca(''); setCategoria(''); setStatusFiltro('todos'); };
+  const algumFiltroAtivo = query !== '' || marca !== '' || categoria !== '' || statusFiltro !== 'todos';
+
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-3">
@@ -340,10 +377,71 @@ function ProductsTab() {
         </button>
       </div>
 
-      <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[70vh] lg:h-[65vh]">
+      <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="lg:col-span-2">
+          <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1.5">Buscar</label>
+          <input
+            type="text"
+            placeholder="Descrição, código, código de barras..."
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-200 text-sm"
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1.5">Marca</label>
+          <select
+            value={marca}
+            onChange={(e) => setMarca(e.target.value)}
+            className="w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-200 text-sm"
+          >
+            <option value="">Todas</option>
+            {marcas.map(m => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1.5">Categoria</label>
+          <select
+            value={categoria}
+            onChange={(e) => setCategoria(e.target.value)}
+            className="w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-200 text-sm"
+          >
+            <option value="">Todas</option>
+            {categorias.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap items-center gap-2">
+          <span className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mr-1">Status:</span>
+          {(['todos', 'ativo', 'inativo'] as const).map(s => (
+            <button
+              key={s}
+              onClick={() => setStatusFiltro(s)}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors',
+                statusFiltro === s
+                  ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300'
+                  : 'bg-white/5 border-white/10 text-slate-400 hover:bg-white/10'
+              )}
+            >
+              {s === 'todos' ? 'Todos' : s === 'ativo' ? 'Ativos' : 'Inativos'}
+            </button>
+          ))}
+          {algumFiltroAtivo && (
+            <button onClick={limparFiltros} className="ml-auto px-3 py-1.5 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-slate-400 hover:bg-white/10 transition-colors">
+              Limpar filtros
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[60vh] lg:h-[55vh]">
         <div className="p-4 sm:p-6 border-b border-white/10 flex justify-between items-center">
           <h3 className="font-bold text-white text-sm sm:text-base">Estoque Sincronizado</h3>
-          <span className="text-xs text-slate-400">{products.length} produtos</span>
+          <span className="text-xs text-slate-400">
+            {filtered.length === products.length
+              ? `${products.length} produtos`
+              : `${filtered.length} de ${products.length} produtos`}
+          </span>
         </div>
         <div className="overflow-auto flex-1">
           <table className="w-full text-left min-w-[640px]">
@@ -364,7 +462,9 @@ function ProductsTab() {
                 <tr><td colSpan={8} className="p-8 text-center text-slate-500">Carregando...</td></tr>
               ) : products.length === 0 ? (
                 <tr><td colSpan={8} className="p-8 text-center text-slate-500">Nenhum produto. Importe uma planilha.</td></tr>
-              ) : products.map(p => (
+              ) : filtered.length === 0 ? (
+                <tr><td colSpan={8} className="p-8 text-center text-slate-500">Nenhum produto bate com os filtros.</td></tr>
+              ) : filtered.map(p => (
                 <tr key={p.id} className={cn('border-t border-white/5 transition-colors hover:bg-white/5', !p.ativo && 'opacity-50')}>
                   <td className="px-3 sm:px-4 py-3 text-xs font-mono text-slate-500">{p.codigo}</td>
                   <td className="px-3 sm:px-4 py-3 text-sm text-slate-200 max-w-[180px] sm:max-w-xs truncate">{p.descricao}</td>
