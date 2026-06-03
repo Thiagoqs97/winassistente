@@ -34,6 +34,9 @@ async function initDB(): Promise<void> {
     `);
     await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS categoria VARCHAR(255);`);
     await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS codigo_barras VARCHAR(255);`);
+    // tags: palavras-chave/sinônimos curados manualmente no painel para reforçar a busca
+    // do agente (ex.: produto descrito como "ômega" ganha tag "omega 3 epa dha").
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS tags TEXT;`);
 
     await client.query(`
       CREATE INDEX IF NOT EXISTS trgm_idx_products_descricao
@@ -42,6 +45,10 @@ async function initDB(): Promise<void> {
     await client.query(`
       CREATE INDEX IF NOT EXISTS trgm_idx_products_descricao_lower
       ON products USING GIN (lower(descricao) gin_trgm_ops);
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS trgm_idx_products_tags
+      ON products USING GIN (lower(coalesce(tags, '')) gin_trgm_ops);
     `);
 
     await client.query(`
@@ -209,6 +216,35 @@ async function initDB(): Promise<void> {
 
     await client.query(`ALTER TABLE orcamentos ADD COLUMN IF NOT EXISTS cliente_id UUID REFERENCES clientes(id) ON DELETE SET NULL;`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orcamentos_cliente_id ON orcamentos(cliente_id);`);
+
+    // --- Kanban de negócios (funil de atendimento) ---
+    // Um "negócio" = um cartão do quadro Kanban. Ancorado na sessão (conversa):
+    // 1 negócio por sessão (UNIQUE sessao_id). Nasce em 'novo_contato' quando a
+    // conversa abre, avança automaticamente conforme o atendimento progride
+    // (em_andamento → orcamento → expedicao → recebido) e pode ser movido
+    // manualmente (arrastar) ou por mensagem ao assistente. O estágio é a fonte
+    // de verdade da POSIÇÃO no quadro; o status do orçamento é sincronizado em
+    // paralelo (aberto/venda/cancelado) — ver api/services/negocios.ts.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS negocios (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        sessao_id UUID UNIQUE REFERENCES sessoes(id) ON DELETE CASCADE,
+        vendedor_id UUID REFERENCES vendedores(id) ON DELETE CASCADE,
+        cliente_id UUID REFERENCES clientes(id) ON DELETE SET NULL,
+        cliente_nome TEXT,
+        orcamento_id UUID REFERENCES orcamentos(id) ON DELETE SET NULL,
+        orcamento_numero TEXT,
+        estagio TEXT NOT NULL DEFAULT 'novo_contato'
+          CHECK (estagio IN ('novo_contato','em_andamento','orcamento','expedicao','recebido','cancelado')),
+        valor NUMERIC(10, 2),
+        arquivado BOOLEAN NOT NULL DEFAULT false,
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_negocios_vendedor_estagio ON negocios(vendedor_id, estagio, atualizado_em DESC);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_negocios_estagio ON negocios(estagio, atualizado_em DESC) WHERE arquivado = false;`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_negocios_orcamento ON negocios(orcamento_id);`);
 
     // --- Auth (Fase 1a) ---
     await client.query(`

@@ -5,7 +5,7 @@ export const EXTRACT_INTENT_PROMPT = `Você NÃO é um chatbot. Você é um CLAS
 
 SAÍDA (JSON obrigatório):
 {
-  "intent": "pedido" | "listar_abertos" | "buscar_por_cliente" | "historico_cliente" | "fechar_venda" | "cancelar_orcamento" | "alterar_orcamento" | "outro",
+  "intent": "pedido" | "listar_abertos" | "buscar_por_cliente" | "historico_cliente" | "fechar_venda" | "cancelar_orcamento" | "alterar_orcamento" | "marcar_expedicao" | "marcar_recebido" | "outro",
   "new_session": boolean,        // true SOMENTE se o vendedor pediu novo pedido / outro cliente explicitamente
   "ref_numero": string | null,   // se citou um nº de orçamento (ex: "ORC-000123", "123", "o orçamento 45"). Devolva os DÍGITOS apenas: "123", "45". null se não citou.
   "cliente_busca": string | null,// se intent=buscar_por_cliente OU historico_cliente, nome a buscar. null caso contrário.
@@ -20,6 +20,8 @@ DEFINIÇÃO DOS INTENTS:
 - "fechar_venda": vendedor quer marcar um orçamento como venda fechada ("fechei o ORC-123", "marca o 45 como venda", "o 123 virou venda", "vendi o orçamento 7"). Preencha ref_numero.
 - "cancelar_orcamento": vendedor quer cancelar um orçamento ("cancela o ORC-123", "cancela o 45", "esquece o orçamento 7"). Preencha ref_numero.
 - "alterar_orcamento": vendedor quer modificar um orçamento já gerado ("adiciona 2 whey no ORC-123", "muda a quantidade do 45", "tira o tasty do 7", "no 123 troca o sabor"). Preencha ref_numero E terms (novos produtos/itens citados).
+- "marcar_expedicao": vendedor avisa que um pedido/orçamento foi enviado, despachado, separado ou saiu para entrega ("o ORC-123 já foi enviado", "despachei o 45", "saiu pra entrega o 7", "o pedido do João foi expedido"). Preencha ref_numero.
+- "marcar_recebido": vendedor avisa que o cliente recebeu o pedido / a mercadoria chegou ("o cliente recebeu o ORC-123", "chegou o 45", "o João confirmou o recebimento do 7", "entregue"). Preencha ref_numero.
 - "outro": saudação, agradecimento, dúvida geral, mensagem sem ação clara.
 
 REGRAS PARA "terms" (só preencher quando intent="pedido" ou "alterar_orcamento"):
@@ -42,7 +44,11 @@ EXEMPLOS:
 - "Bom dia" → {"intent":"outro","new_session":false,"ref_numero":null,"cliente_busca":null,"terms":[]}
 - "esquece, novo pedido pra outro cliente" → {"intent":"pedido","new_session":true,"ref_numero":null,"cliente_busca":null,"terms":[]}
 - "histórico do João" → {"intent":"historico_cliente","new_session":false,"ref_numero":null,"cliente_busca":"joão","terms":[]}
-- "quanto a Maria já comprou?" → {"intent":"historico_cliente","new_session":false,"ref_numero":null,"cliente_busca":"maria","terms":[]}`;
+- "quanto a Maria já comprou?" → {"intent":"historico_cliente","new_session":false,"ref_numero":null,"cliente_busca":"maria","terms":[]}
+- "o ORC-123 já foi enviado" → {"intent":"marcar_expedicao","new_session":false,"ref_numero":"123","cliente_busca":null,"terms":[]}
+- "despachei o 45" → {"intent":"marcar_expedicao","new_session":false,"ref_numero":"45","cliente_busca":null,"terms":[]}
+- "o cliente recebeu o ORC-7" → {"intent":"marcar_recebido","new_session":false,"ref_numero":"7","cliente_busca":null,"terms":[]}
+- "chegou o pedido 45" → {"intent":"marcar_recebido","new_session":false,"ref_numero":"45","cliente_busca":null,"terms":[]}`;
 
 export interface OrcamentoEmAlteracao {
   numero: string;

@@ -19,6 +19,12 @@ import { getKpis } from '../services/dashboard.js';
 import { getUltimosPrecosVendedor, compararPreco, type VariacaoPreco } from '../services/precos.js';
 import { debounceMensagem } from '../services/message-buffer.js';
 import {
+  ensureNegocio,
+  avancarEstagioAuto,
+  syncEstagioPorStatusOrc,
+  marcarEstagioPorNumero,
+} from '../services/negocios.js';
+import {
   EXTRACT_INTENT_PROMPT,
   buildAlteracaoBlock,
   buildFinalPrompt,
@@ -264,6 +270,9 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
       return;
     }
 
+    // Kanban: garante o cartão "Novo Contato" desta conversa. Idempotente.
+    await ensureNegocio(currentSessionId!, vendedorId);
+
     // Slash commands (atalhos determinísticos antes do LLM). Não tocam em
     // acao_pendente — vendedor pode pedir /ajuda no meio de uma confirmação.
     const slash = parseComandoSlash(incomingText);
@@ -412,6 +421,7 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
                WHERE numero = $1 AND vendedor_id = $2 AND status = 'aberto'`,
               [acaoPendente.numero, vendedorId]
             );
+            if ((rowCount ?? 0) > 0) await syncEstagioPorStatusOrc(acaoPendente.numero, 'venda');
             reply = (rowCount ?? 0) > 0
               ? `✅ *${acaoPendente.numero}* marcado como VENDA. 🎉`
               : `Não consegui fechar o ${acaoPendente.numero} — talvez já tenha sido fechado ou cancelado.`;
@@ -421,6 +431,7 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
                WHERE numero = $1 AND vendedor_id = $2 AND status = 'aberto'`,
               [acaoPendente.numero, vendedorId]
             );
+            if ((rowCount ?? 0) > 0) await syncEstagioPorStatusOrc(acaoPendente.numero, 'cancelado');
             reply = (rowCount ?? 0) > 0
               ? `🚫 *${acaoPendente.numero}* cancelado.`
               : `Não consegui cancelar o ${acaoPendente.numero} — talvez já tenha sido fechado ou cancelado.`;
@@ -527,6 +538,12 @@ webhookRouter.post('/webhook/evolution', async (req, res) => {
         [currentSessionId]
       );
       historyMessages = colapsarUserConsecutivas(novosRows);
+      await ensureNegocio(currentSessionId!, vendedorId);
+    }
+
+    // Kanban: pedido em construção → move o cartão pra "Em Andamento" (forward-only).
+    if (intent === 'pedido') {
+      await avancarEstagioAuto(currentSessionId!, 'em_andamento');
     }
 
     // Roteamento determinístico para intents administrativas
@@ -641,6 +658,30 @@ ${linhasUltimos}`;
           matches.map((o, i) =>
             `${i + 1}. *${o.numero}* — ${o.cliente_nome} — R$ ${fmtBR(o.total)} — ${statusLabel[o.status] || o.status}`
           ).join('\n');
+      await replyAndLog(senderNumber, currentSessionId!, vendedorId, reply);
+      return;
+    }
+
+    if (intent === 'marcar_expedicao' || intent === 'marcar_recebido') {
+      const numeroNorm = normalizarNumeroOrcamento(refNumero);
+      const estagioAlvo = intent === 'marcar_expedicao' ? 'expedicao' : 'recebido';
+      if (!numeroNorm) {
+        await replyAndLog(senderNumber, currentSessionId!, vendedorId,
+          intent === 'marcar_expedicao'
+            ? 'Qual orçamento foi enviado? Me passa o número (ex: "ORC-000123 foi enviado").'
+            : 'Qual orçamento o cliente recebeu? Me passa o número (ex: "o cliente recebeu o ORC-000123").');
+        return;
+      }
+      const r = await marcarEstagioPorNumero({ orcamentoNumero: numeroNorm, estagio: estagioAlvo, vendedorId });
+      if (!r.ok) {
+        await replyAndLog(senderNumber, currentSessionId!, vendedorId,
+          `Não achei o ${numeroNorm} nos seus orçamentos. Confira o número.`);
+        return;
+      }
+      const cli = r.clienteNome ? ` (${r.clienteNome})` : '';
+      const reply = intent === 'marcar_expedicao'
+        ? `🚚 *${numeroNorm}*${cli} marcado como *em expedição*. Te aviso quando o cliente confirmar o recebimento. 👍`
+        : `📦 *${numeroNorm}*${cli} marcado como *recebido*. Negócio concluído! 🎉`;
       await replyAndLog(senderNumber, currentSessionId!, vendedorId, reply);
       return;
     }

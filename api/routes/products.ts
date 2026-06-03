@@ -122,6 +122,12 @@ productsRouter.post('/upload-stock', requirePermission('products.import'), async
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Preserva as tags curadas no painel: o DELETE abaixo recria todos os produtos,
+      // então salvamos as tags por código e reaplicamos após o insert.
+      await client.query(`
+        CREATE TEMP TABLE _saved_tags ON COMMIT DROP AS
+        SELECT codigo, tags FROM products WHERE tags IS NOT NULL AND tags <> ''
+      `);
       await client.query('DELETE FROM products');
 
       for (let i = 0; i < rows.length; i += CHUNK) {
@@ -143,6 +149,11 @@ productsRouter.post('/upload-stock', requirePermission('products.import'), async
         inserted += chunk.length;
       }
 
+      await client.query(`
+        UPDATE products p SET tags = s.tags
+        FROM _saved_tags s WHERE p.codigo = s.codigo
+      `);
+
       await client.query('COMMIT');
       res.json({ message: `${inserted} produtos importados com sucesso.${skipped > 0 ? ` (${skipped} linhas ignoradas)` : ''}` });
     } catch (e) {
@@ -163,6 +174,24 @@ productsRouter.get('/products', requirePermission('products.view'), async (_req,
     // Pra bases muito grandes (>50k), futura paginação server-side resolve.
     const { rows } = await pool.query('SELECT * FROM products ORDER BY id DESC');
     res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Edita as tags/palavras-chave de busca de um produto (curadoria manual no painel).
+productsRouter.patch('/products/:id', requirePermission('products.edit'), async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID inválido' });
+    const { tags } = req.body ?? {};
+    const val = tags == null || String(tags).trim() === '' ? null : String(tags).trim();
+    const { rows } = await pool.query(
+      'UPDATE products SET tags = $1 WHERE id = $2 RETURNING *',
+      [val, id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Produto não encontrado' });
+    res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: 'Database error' });
   }

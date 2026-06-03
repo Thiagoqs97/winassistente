@@ -60,7 +60,10 @@ export async function searchProducts(terms: string[]): Promise<{ term: string; p
         t.term,
         GREATEST(
           similarity(unaccent(lower(p.descricao)), unaccent(lower(t.term))),
+          similarity(unaccent(lower(coalesce(p.tags, ''))), unaccent(lower(t.term))),
           CASE WHEN unaccent(lower(p.descricao)) ILIKE '%' || unaccent(lower(t.term)) || '%'
+               THEN 0.5 ELSE 0 END,
+          CASE WHEN p.tags IS NOT NULL AND unaccent(lower(p.tags)) ILIKE '%' || unaccent(lower(t.term)) || '%'
                THEN 0.5 ELSE 0 END
         ) AS sml
       FROM products p
@@ -69,6 +72,8 @@ export async function searchProducts(terms: string[]): Promise<{ term: string; p
         AND (
           similarity(unaccent(lower(p.descricao)), unaccent(lower(t.term))) > 0.08
           OR unaccent(lower(p.descricao)) ILIKE '%' || unaccent(lower(t.term)) || '%'
+          OR similarity(unaccent(lower(coalesce(p.tags, ''))), unaccent(lower(t.term))) > 0.08
+          OR (p.tags IS NOT NULL AND unaccent(lower(p.tags)) ILIKE '%' || unaccent(lower(t.term)) || '%')
         )
     ),
     ranked AS (
@@ -93,13 +98,17 @@ export async function searchProducts(terms: string[]): Promise<{ term: string; p
 
     if (strong.length === 0) continue;
 
+    // Haystack inclui as tags curadas: "omega 3" casa um produto descrito só como "ômega"
+    // se tiver a tag correspondente.
+    const haystack = `unaccent(lower(descricao || ' ' || coalesce(tags, '')))`;
+
     const strongConds = strong
-      .map((_, i) => `unaccent(lower(descricao)) ILIKE '%' || unaccent(lower($${i + 1})) || '%'`)
+      .map((_, i) => `${haystack} ILIKE '%' || unaccent(lower($${i + 1})) || '%'`)
       .join(' AND ');
 
     const weakBonusExpr = weak.length > 0
       ? weak.map((_, i) =>
-          `(CASE WHEN unaccent(lower(descricao)) ILIKE '%' || unaccent(lower($${strong.length + i + 1})) || '%' THEN 0.1 ELSE 0 END)`
+          `(CASE WHEN ${haystack} ILIKE '%' || unaccent(lower($${strong.length + i + 1})) || '%' THEN 0.1 ELSE 0 END)`
         ).join(' + ')
       : '0';
 

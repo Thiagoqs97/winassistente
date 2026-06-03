@@ -1,18 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { PackageOpen, MessageSquare, Settings, Upload, History, FileText, ShoppingBag, Users, UserCog, LogOut, LayoutDashboard, TrendingUp, TrendingDown, DollarSign, Target, Receipt, AlertTriangle, Sparkles, Menu, X } from 'lucide-react';
+import { PackageOpen, MessageSquare, Settings, Upload, History, FileText, ShoppingBag, Users, UserCog, LogOut, LayoutDashboard, TrendingUp, TrendingDown, DollarSign, Target, Receipt, AlertTriangle, Sparkles, Menu, X, Printer, SquareKanban, Pencil } from 'lucide-react';
 import { cn } from './lib/utils';
+import { KanbanBoard } from './KanbanBoard';
 import { useAuth } from './auth/AuthContext';
 import { LoginScreen } from './auth/LoginScreen';
 import { hasAnyPermission, PERMISSION_LABELS, PERMISSIONS, type Permission } from './lib/permissions';
 import { InstallPrompt } from './InstallPrompt';
 import { ErrorBoundary } from './ErrorBoundary';
 
-type TabKey = 'dashboard' | 'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas' | 'clientes' | 'users';
+type TabKey = 'dashboard' | 'kanban' | 'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas' | 'clientes' | 'users';
 
 // Cada tab declara as permissões que dão acesso (admin sempre vê tudo).
 // 'users' é admin-only — a checagem real é feita pelo role, não pela permissão.
 const TAB_PERMS: Record<TabKey, Permission[]> = {
   dashboard: ['dashboard.view'],
+  kanban: ['kanban.view'],
   import: ['products.import'],
   products: ['products.view'],
   clientes: ['clientes.view'],
@@ -55,7 +57,7 @@ function ProtectedApp() {
 
   // Determina as tabs visíveis para este usuário e define a inicial.
   const visibleTabs = useMemo<TabKey[]>(() => {
-    const all: TabKey[] = ['dashboard', 'import', 'products', 'clientes', 'history', 'orcamentos', 'vendas', 'settings', 'users'];
+    const all: TabKey[] = ['dashboard', 'kanban', 'import', 'products', 'clientes', 'history', 'orcamentos', 'vendas', 'settings', 'users'];
     return all.filter(t => {
       if (t === 'users') return u.role === 'admin';
       return hasAnyPermission(u, ...TAB_PERMS[t]);
@@ -99,6 +101,7 @@ function ProtectedApp() {
     <>
       <p className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold px-2">Navegação</p>
       {visibleTabs.includes('dashboard') && <SidebarItem icon={<LayoutDashboard size={16} />} label="Dashboard" active={activeTab === 'dashboard'} onClick={() => goTo('dashboard')} />}
+      {visibleTabs.includes('kanban') && <SidebarItem icon={<SquareKanban size={16} />} label="Kanban" active={activeTab === 'kanban'} onClick={() => goTo('kanban')} />}
       {visibleTabs.includes('import') && <SidebarItem icon={<Upload size={16} />} label="Importação" active={activeTab === 'import'} onClick={() => goTo('import')} />}
       {visibleTabs.includes('products') && <SidebarItem icon={<PackageOpen size={16} />} label="Produtos" active={activeTab === 'products'} onClick={() => goTo('products')} />}
       {visibleTabs.includes('clientes') && <SidebarItem icon={<Users size={16} />} label="Clientes" active={activeTab === 'clientes'} onClick={() => goTo('clientes')} />}
@@ -203,6 +206,7 @@ function ProtectedApp() {
           <div className="max-w-5xl mx-auto w-full">
             <ErrorBoundary key={activeTab}>
               {activeTab === 'dashboard' && <DashboardTab />}
+              {activeTab === 'kanban' && <KanbanBoard />}
               {activeTab === 'import' && <ImportTab />}
               {activeTab === 'products' && <ProductsTab />}
               {activeTab === 'clientes' && <ClientesTab />}
@@ -316,6 +320,10 @@ function ProductsTab() {
   const [marca, setMarca] = useState<string>('');
   const [categoria, setCategoria] = useState<string>('');
   const [statusFiltro, setStatusFiltro] = useState<'todos' | 'ativo' | 'inativo'>('todos');
+  const [selecionados, setSelecionados] = useState<Set<number>>(new Set());
+  const [editando, setEditando] = useState<any | null>(null);
+  const [tagsEdit, setTagsEdit] = useState('');
+  const [salvandoTags, setSalvandoTags] = useState(false);
 
   useEffect(() => { fetchProducts(); }, []);
 
@@ -368,6 +376,137 @@ function ProductsTab() {
 
   const limparFiltros = () => { setQuery(''); setMarca(''); setCategoria(''); setStatusFiltro('todos'); };
   const algumFiltroAtivo = query !== '' || marca !== '' || categoria !== '' || statusFiltro !== 'todos';
+
+  const toggleSelecionado = (id: number) => {
+    setSelecionados(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const todosVisiveisSelecionados = filtered.length > 0 && filtered.every(p => selecionados.has(p.id));
+
+  const toggleSelecionarTodos = () => {
+    setSelecionados(prev => {
+      const next = new Set(prev);
+      if (todosVisiveisSelecionados) {
+        for (const p of filtered) next.delete(p.id);
+      } else {
+        for (const p of filtered) next.add(p.id);
+      }
+      return next;
+    });
+  };
+
+  const imprimirSelecionados = () => {
+    const itens = filtered.filter(p => selecionados.has(p.id));
+    if (itens.length === 0) return;
+
+    const esc = (s: any) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
+    const data = new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
+
+    const linhas = itens.map((p, i) => `
+      <tr>
+        <td class="num">${i + 1}</td>
+        <td class="mono">${esc(p.codigo)}</td>
+        <td class="desc">${esc(p.descricao)}</td>
+        <td>${esc(p.marca || '—')}</td>
+        <td>${esc(p.categoria || '—')}</td>
+        <td>${esc(p.embalagem || '—')}</td>
+        <td class="preco">${p.preco_venda ? 'R$ ' + Number(p.preco_venda).toFixed(2).replace('.', ',') : '—'}</td>
+      </tr>`).join('');
+
+    const html = `<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<title>WIN Distribuidora — Lista de Produtos</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; color: #1a1a1a; margin: 32px; }
+  header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 3px solid #4f46e5; padding-bottom: 14px; margin-bottom: 6px; }
+  .brand h1 { margin: 0; font-size: 24px; letter-spacing: -0.5px; color: #4f46e5; }
+  .brand p { margin: 4px 0 0; font-size: 13px; color: #555; font-weight: 600; }
+  .meta { text-align: right; font-size: 12px; color: #666; line-height: 1.5; }
+  .meta strong { color: #1a1a1a; }
+  table { width: 100%; border-collapse: collapse; margin-top: 18px; font-size: 12px; }
+  thead th { background: #f1f1f7; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; color: #555; text-align: left; padding: 8px 10px; border-bottom: 2px solid #ddd; }
+  tbody td { padding: 7px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
+  tbody tr:nth-child(even) { background: #fafafa; }
+  td.num { color: #999; width: 28px; }
+  td.mono { font-family: 'Consolas', monospace; color: #666; white-space: nowrap; }
+  td.desc { font-weight: 600; }
+  td.preco { white-space: nowrap; text-align: right; font-weight: 600; }
+  th.preco { text-align: right; }
+  footer { margin-top: 24px; font-size: 10px; color: #999; text-align: center; border-top: 1px solid #eee; padding-top: 10px; }
+  @media print { body { margin: 12px; } @page { margin: 14mm; } }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>WIN Distribuidora</h1>
+      <p>Lista de Produtos</p>
+    </div>
+    <div class="meta">
+      <div>Emitido em <strong>${data}</strong></div>
+      <div><strong>${itens.length}</strong> ${itens.length === 1 ? 'produto' : 'produtos'}</div>
+    </div>
+  </header>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Código</th>
+        <th>Descrição</th>
+        <th>Marca</th>
+        <th>Categoria</th>
+        <th>Embalagem</th>
+        <th class="preco">Preço</th>
+      </tr>
+    </thead>
+    <tbody>${linhas}</tbody>
+  </table>
+  <footer>WIN Distribuidora · Documento gerado automaticamente — não é um orçamento.</footer>
+</body>
+</html>`;
+
+    const win = window.open('', '_blank');
+    if (!win) return;
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    win.onload = () => { win.print(); };
+    // Fallback caso onload não dispare (conteúdo já pronto via document.write)
+    setTimeout(() => { try { win.print(); } catch {} }, 400);
+  };
+
+  const abrirEdicaoTags = (p: any) => {
+    setEditando(p);
+    setTagsEdit(p.tags || '');
+  };
+
+  const salvarTags = async () => {
+    if (!editando) return;
+    setSalvandoTags(true);
+    try {
+      const res = await fetch(`/api/products/${editando.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags: tagsEdit }),
+      });
+      if (!res.ok) throw new Error('Falha ao salvar');
+      const atualizado = await res.json();
+      setProducts(prev => prev.map(p => p.id === atualizado.id ? { ...p, tags: atualizado.tags } : p));
+      setEditando(null);
+    } catch (e) {
+      console.error(e);
+      alert('Não foi possível salvar as tags.');
+    } finally {
+      setSalvandoTags(false);
+    }
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -438,19 +577,29 @@ function ProductsTab() {
         </div>
       </div>
 
-      <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10 overflow-hidden flex flex-col h-[60vh] lg:h-[55vh]">
-        <div className="p-4 sm:p-6 border-b border-white/10 flex justify-between items-center">
+      <div className="rounded-2xl sm:rounded-3xl bg-white/5 backdrop-blur-xl border border-white/10">
+        <div className="p-4 sm:p-6 border-b border-white/10 flex flex-wrap justify-between items-center gap-2">
           <h3 className="font-bold text-white text-sm sm:text-base">Estoque Sincronizado</h3>
           <span className="text-xs text-slate-400">
+            {selecionados.size > 0 && <span className="text-indigo-300 font-bold mr-2">{selecionados.size} selecionado{selecionados.size > 1 ? 's' : ''}</span>}
             {filtered.length === products.length
               ? `${products.length} produtos`
               : `${filtered.length} de ${products.length} produtos`}
           </span>
         </div>
-        <div className="overflow-auto flex-1">
+        <div className="overflow-x-auto">
           <table className="w-full text-left min-w-[640px]">
-            <thead className="bg-slate-950/50 sticky top-0 z-10 backdrop-blur-md">
+            <thead className="bg-slate-950/95 sticky top-0 z-10 backdrop-blur-md">
               <tr className="text-[10px] uppercase text-slate-500">
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold w-10">
+                  <input
+                    type="checkbox"
+                    checked={todosVisiveisSelecionados}
+                    onChange={toggleSelecionarTodos}
+                    aria-label="Selecionar todos"
+                    className="w-4 h-4 rounded accent-indigo-500 cursor-pointer align-middle"
+                  />
+                </th>
                 <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold">Código</th>
                 <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold">Descrição</th>
                 <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden md:table-cell">Marca</th>
@@ -459,19 +608,38 @@ function ProductsTab() {
                 <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden xl:table-cell">Cód. Barras</th>
                 <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold">Preço</th>
                 <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold text-center">Status</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold text-center">Tags</th>
               </tr>
             </thead>
             <tbody className="text-sm">
               {loading ? (
-                <tr><td colSpan={8} className="p-8 text-center text-slate-500">Carregando...</td></tr>
+                <tr><td colSpan={10} className="p-8 text-center text-slate-500">Carregando...</td></tr>
               ) : products.length === 0 ? (
-                <tr><td colSpan={8} className="p-8 text-center text-slate-500">Nenhum produto. Importe uma planilha.</td></tr>
+                <tr><td colSpan={10} className="p-8 text-center text-slate-500">Nenhum produto. Importe uma planilha.</td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={8} className="p-8 text-center text-slate-500">Nenhum produto bate com os filtros.</td></tr>
+                <tr><td colSpan={10} className="p-8 text-center text-slate-500">Nenhum produto bate com os filtros.</td></tr>
               ) : filtered.map(p => (
-                <tr key={p.id} className={cn('border-t border-white/5 transition-colors hover:bg-white/5', !p.ativo && 'opacity-50')}>
+                <tr key={p.id} className={cn('border-t border-white/5 transition-colors hover:bg-white/5', selecionados.has(p.id) && 'bg-indigo-500/10', !p.ativo && 'opacity-50')}>
+                  <td className="px-3 sm:px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={selecionados.has(p.id)}
+                      onChange={() => toggleSelecionado(p.id)}
+                      aria-label={`Selecionar ${p.descricao}`}
+                      className="w-4 h-4 rounded accent-indigo-500 cursor-pointer align-middle"
+                    />
+                  </td>
                   <td className="px-3 sm:px-4 py-3 text-xs font-mono text-slate-500">{p.codigo}</td>
-                  <td className="px-3 sm:px-4 py-3 text-sm text-slate-200 max-w-[180px] sm:max-w-xs truncate">{p.descricao}</td>
+                  <td className="px-3 sm:px-4 py-3 text-sm text-slate-200 max-w-[180px] sm:max-w-xs">
+                    <div className="truncate">{p.descricao}</div>
+                    {p.tags && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {String(p.tags).split(/[,\n]/).map((t: string) => t.trim()).filter(Boolean).slice(0, 6).map((t: string, i: number) => (
+                          <span key={i} className="inline-block px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300 text-[10px] font-medium">{t}</span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden md:table-cell">{p.marca || '--'}</td>
                   <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden lg:table-cell">{p.categoria || '--'}</td>
                   <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden lg:table-cell">{p.embalagem || '--'}</td>
@@ -482,12 +650,84 @@ function ProductsTab() {
                       {p.ativo ? 'ATIVO' : 'INATIVO'}
                     </button>
                   </td>
+                  <td className="px-3 sm:px-4 py-3 text-center">
+                    <button
+                      onClick={() => abrirEdicaoTags(p)}
+                      title="Editar tags / palavras-chave de busca"
+                      className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-white/5 border border-white/10 text-slate-400 hover:text-indigo-300 hover:bg-indigo-500/10 transition-colors"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       </div>
+
+      {selecionados.size > 0 && (
+        <div className="fixed bottom-5 right-5 sm:bottom-8 sm:right-8 z-30 flex items-center gap-2 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <button
+            onClick={() => setSelecionados(new Set())}
+            className="px-3 py-2.5 rounded-xl bg-slate-800/90 backdrop-blur border border-white/10 text-slate-300 text-xs font-bold hover:bg-slate-700/90 transition-colors shadow-lg"
+          >
+            Limpar
+          </button>
+          <button
+            onClick={imprimirSelecionados}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold transition-colors shadow-xl shadow-indigo-900/40"
+          >
+            <Printer size={16} />
+            Imprimir {selecionados.size} produto{selecionados.size > 1 ? 's' : ''}
+          </button>
+        </div>
+      )}
+
+      {editando && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-2 sm:p-6 bg-black/60 backdrop-blur-sm safe-pb" onClick={() => !salvandoTags && setEditando(null)}>
+          <div className="bg-slate-900 border border-white/10 rounded-3xl max-w-lg w-full max-h-[92vh] overflow-auto p-5 sm:p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-start mb-4">
+              <div className="min-w-0">
+                <h3 className="text-xl font-bold text-white">Tags de busca</h3>
+                <p className="text-slate-400 text-sm mt-1 truncate">{editando.descricao}</p>
+                <p className="text-[11px] text-slate-500 font-mono mt-0.5">{editando.codigo}</p>
+              </div>
+              <button onClick={() => !salvandoTags && setEditando(null)} className="text-slate-400 hover:text-white text-2xl leading-none ml-2">×</button>
+            </div>
+
+            <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1.5">Palavras-chave / sinônimos</label>
+            <textarea
+              value={tagsEdit}
+              onChange={(e) => setTagsEdit(e.target.value)}
+              rows={3}
+              autoFocus
+              placeholder="Ex.: omega 3, ômega, epa, dha, óleo de peixe"
+              className="w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-200 text-sm resize-none"
+            />
+            <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
+              Separe por vírgula. O agente passa a encontrar este produto também por estas palavras na busca do WhatsApp — útil quando a descrição não tem o termo que o vendedor usa.
+            </p>
+
+            <div className="flex gap-2 justify-end mt-5">
+              <button
+                onClick={() => setEditando(null)}
+                disabled={salvandoTags}
+                className="px-4 py-2 rounded-xl bg-white/5 border border-white/10 text-slate-300 text-sm font-bold hover:bg-white/10 transition-colors disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={salvarTags}
+                disabled={salvandoTags}
+                className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold transition-colors disabled:opacity-50"
+              >
+                {salvandoTags ? 'Salvando...' : 'Salvar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

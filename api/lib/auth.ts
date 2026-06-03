@@ -12,6 +12,7 @@ export const PERMISSIONS = [
   'clientes.delete',
   'orcamentos.view',
   'orcamentos.edit',
+  'kanban.view',
   'vendas.view',
   'vendedores.view',
   'vendedores.edit',

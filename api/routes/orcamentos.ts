@@ -3,6 +3,7 @@ import { pool } from '../db/pool.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth, requirePermission, type AuthRequest } from '../middleware/auth.js';
 import { generateOrcamentoPDF } from '../services/pdf.js';
+import { syncEstagioPorStatusOrc } from '../services/negocios.js';
 
 export const orcamentosRouter = Router();
 
@@ -98,6 +99,8 @@ async function patchStatus(req: AuthRequest, res: Response, novoStatus: 'venda' 
       [...params, novoStatus]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Orçamento não encontrado' });
+    // Kanban: mantém a coluna do cartão em sincronia com o status do orçamento.
+    await syncEstagioPorStatusOrc(req.params.numero, novoStatus);
     res.json(rows[0]);
   } catch (err) {
     res.status(500).json({ error: 'Database error' });

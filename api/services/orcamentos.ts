@@ -4,6 +4,7 @@ import { sendWhatsAppMessage, sendWhatsAppImage } from './whatsapp.js';
 import { searchClientes, type ClienteMatch } from './search.js';
 import { formatListaClientes } from './intents.js';
 import { generateOrcamentoImages } from './imagem-orcamento.js';
+import { vincularOrcamento, atualizarDadosPorOrcamento } from './negocios.js';
 
 const fmtBR = (n: number) => n.toFixed(2).replace('.', ',');
 
@@ -100,6 +101,8 @@ export async function gravarOrcamento(opts: {
       );
       return { numero: numeroAlvo, replyText: reply };
     }
+    // Kanban: reflete cliente/valor novos no cartão (estágio inalterado).
+    await atualizarDadosPorOrcamento({ orcamentoNumero: numeroAlvo, clienteId, clienteNome, valor: total });
     const replyText = formatarTextoOrcamento({
       numero: numeroAlvo,
       clienteNome,
@@ -123,9 +126,10 @@ export async function gravarOrcamento(opts: {
   const seqNum = Number(seqRows[0].seq);
   const numero = `ORC-${String(seqNum).padStart(6, '0')}`;
 
-  await pool.query(
+  const { rows: insOrcRows } = await pool.query(
     `INSERT INTO orcamentos (numero, sessao_id, vendedor_id, cliente_id, cliente_nome, itens, total)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+     RETURNING id`,
     [numero, currentSessionId, vendedorId, clienteId, clienteNome, JSON.stringify(itens), total]
   );
 
@@ -133,6 +137,17 @@ export async function gravarOrcamento(opts: {
     `UPDATE sessoes SET status = 'orcamento_gerado', encerrada_em = NOW() WHERE id = $1`,
     [currentSessionId]
   );
+
+  // Kanban: move o cartão da conversa pra coluna "Orçamento" e vincula o ORC.
+  await vincularOrcamento({
+    sessaoId: currentSessionId,
+    vendedorId,
+    orcamentoId: insOrcRows[0].id,
+    orcamentoNumero: numero,
+    clienteId,
+    clienteNome,
+    valor: total,
+  });
 
   const replyText = formatarTextoOrcamento({ numero, clienteNome, itens, total });
 

@@ -63,6 +63,9 @@ Variáveis em `.env` (modelo em `.env.example`):
 | Comandos slash `/ajuda` e `/status` (Fase 4 — 5.2/5.3) | `parseComandoSlash` em `api/services/intents.ts`; pré-handlers em `api/routes/webhook.ts` |
 | Histórico do cliente no WhatsApp (Fase 4 — 5.4) | intent `historico_cliente` no extractor + handler em `api/routes/webhook.ts` |
 | Alerta de variação de preço (Fase 4 — 5.5) | `api/services/precos.ts` + injeção em `buildStockContext` em `api/agents/prompts.ts` |
+| Kanban (funil de negócios) — lógica de estágio | `api/services/negocios.ts` (upsert por sessão, avançar estágio forward-only, vincular ORC, sync status) |
+| Kanban — REST (lista/mover/arquivar) | `api/routes/negocios.ts`: `GET /api/negocios`, `PATCH /api/negocios/:id/{estagio,arquivar}` |
+| Kanban — UI arrasta-e-solta | `src/KanbanBoard.tsx` (HTML5 drag-and-drop + polling 12s; `<select>` de fallback no mobile) |
 | Helper de período (de/ate, default mês atual) | `api/lib/period.ts` |
 | OpenAI client singleton | `api/lib/openai.ts` |
 | Wrapper de chat completion + tracking de custo em `ai_usage` | `api/lib/ai.ts` |
@@ -102,7 +105,8 @@ Variáveis em `.env` (modelo em `.env.example`):
   - `GET /api/vendedores` — só retorna o próprio
   - `GET /api/vendedores/:vendedorId/sessoes` — 403 se não for o próprio
   - `GET /api/sessoes/:sessaoId/mensagens` — 403 se a sessão não for sua
-- **Permissões granulares** (`api/lib/auth.ts:PERMISSIONS`): `products.view/edit/import`, `clientes.view/edit/delete`, `orcamentos.view/edit`, `vendas.view`, `vendedores.view/edit`, `historico.view`, `config.view/edit`, `dashboard.view`, `users.manage`.
+- **Permissões granulares** (`api/lib/auth.ts:PERMISSIONS`): `products.view/edit/import`, `clientes.view/edit/delete`, `orcamentos.view/edit`, `kanban.view`, `vendas.view`, `vendedores.view/edit`, `historico.view`, `config.view/edit`, `dashboard.view`, `users.manage`.
+- **Kanban**: ver o quadro exige `kanban.view`; mover/arrastar cartão exige `orcamentos.edit` (porque altera o status real do ORC). Isolamento por vendedor também vale em `GET/PATCH /api/negocios`.
 - **Webhook** (`/api/webhook/evolution`) **não** passa por auth — o Evolution chama com `apikey` próprio.
 - **JWT** em cookie httpOnly (`win_auth`), 7d de expiração. Frontend usa `credentials: 'include'` via patch global em `src/lib/install-fetch.ts`.
 - **Em 401** o frontend dispara `auth-expired` e o `AuthContext` força logout no estado local.
@@ -116,6 +120,8 @@ Variáveis em `.env` (modelo em `.env.example`):
 - **Onboarding bloqueia o vendedor até informar o nome**. Toda a triagem só corre quando `vendedores.nome IS NOT NULL`. O parser `parseNomeVendedor` é estrito: rejeita números, frases longas, palavras com dígito.
 - **`remoteJidAlt` é preferido ao `remoteJid`** quando termina em `@s.whatsapp.net` — algumas contas Business vêm com `@lid` no remoteJid e o número real no alt.
 - **Rodapé do PDF fica acima de `page.height - margins.bottom`**, não em `page.height - 30`. Caso contrário, o `LineWrapper` do PDFKit cria página adicional ao escrever lá (mesmo com `lineBreak: false`). Ver `api/services/pdf.ts`.
+- **`negocios` é ancorado em `sessao_id` (UNIQUE), não no cliente nem no ORC**. Um cartão do Kanban = uma conversa/sessão. Nasce em `novo_contato` no 1º contato e avança SÓ pra frente automaticamente (`avancarEstagioAuto`); ir pra trás só por arraste manual ou conversa explícita. `expedicao` e `recebido` ambos correspondem a ORC `venda` — a diferença vive só em `negocios.estagio`. Por isso `syncEstagioPorStatusOrc` preserva `recebido` quando o status vira `venda`.
+- **Arrastar um cartão altera o status REAL do orçamento** (decisão de produto): `estagioParaStatusOrc` mapeia coluna→status e o `PATCH /negocios/:id/estagio` propaga pro ORC. Estágios pré-ORC (`novo_contato`/`em_andamento`) não têm ORC, então não propagam nada.
 
 ## Custos e modelos de IA
 
@@ -189,4 +195,6 @@ Detalhes e dependências em `docs/ROADMAP.md` (criado junto com o PRD v3.0).
 - **Cliente**: comprador final da WIN (PJ ou PF) — base importada do Tiny/Bling.
 - **Orçamento**: documento numerado (ORC-NNNNNN) com itens, totais e status (`aberto`/`venda`/`cancelado`).
 - **Ação pendente** (`acao_pendente` em `sessoes`): estado intermediário aguardando confirmação ou escolha do vendedor.
-- **Intent**: classificação do que o vendedor quer (`pedido`, `listar_abertos`, `buscar_por_cliente`, `historico_cliente`, `fechar_venda`, `cancelar_orcamento`, `alterar_orcamento`, `outro`).
+- **Negócio** (`negocios`): um cartão do Kanban = uma conversa/sessão. Tem um `estagio` (coluna do funil) e, depois de gerado, vincula o orçamento.
+- **Estágio**: coluna do funil — `novo_contato`, `em_andamento`, `orcamento`, `expedicao`, `recebido`, `cancelado`.
+- **Intent**: classificação do que o vendedor quer (`pedido`, `listar_abertos`, `buscar_por_cliente`, `historico_cliente`, `fechar_venda`, `cancelar_orcamento`, `alterar_orcamento`, `marcar_expedicao`, `marcar_recebido`, `outro`).
