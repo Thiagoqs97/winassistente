@@ -5,6 +5,7 @@ import { useAuth } from './auth/AuthContext';
 import { LoginScreen } from './auth/LoginScreen';
 import { hasAnyPermission, PERMISSION_LABELS, PERMISSIONS, type Permission } from './lib/permissions';
 import { InstallPrompt } from './InstallPrompt';
+import { ErrorBoundary } from './ErrorBoundary';
 
 type TabKey = 'dashboard' | 'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas' | 'clientes' | 'users';
 
@@ -200,15 +201,17 @@ function ProtectedApp() {
 
         <main className="flex-1 overflow-auto px-3 py-4 sm:px-6 sm:py-6 lg:p-8 flex flex-col gap-6 lg:gap-8 safe-pb safe-pl safe-pr">
           <div className="max-w-5xl mx-auto w-full">
-            {activeTab === 'dashboard' && <DashboardTab />}
-            {activeTab === 'import' && <ImportTab />}
-            {activeTab === 'products' && <ProductsTab />}
-            {activeTab === 'clientes' && <ClientesTab />}
-            {activeTab === 'history' && <HistoryTab />}
-            {activeTab === 'orcamentos' && <OrcamentosTab mode="orcamentos" />}
-            {activeTab === 'vendas' && <OrcamentosTab mode="vendas" />}
-            {activeTab === 'settings' && <SettingsTab />}
-            {activeTab === 'users' && <UsersTab currentUserId={u.id} />}
+            <ErrorBoundary key={activeTab}>
+              {activeTab === 'dashboard' && <DashboardTab />}
+              {activeTab === 'import' && <ImportTab />}
+              {activeTab === 'products' && <ProductsTab />}
+              {activeTab === 'clientes' && <ClientesTab />}
+              {activeTab === 'history' && <HistoryTab />}
+              {activeTab === 'orcamentos' && <OrcamentosTab mode="orcamentos" />}
+              {activeTab === 'vendas' && <OrcamentosTab mode="vendas" />}
+              {activeTab === 'settings' && <SettingsTab />}
+              {activeTab === 'users' && <UsersTab currentUserId={u.id} />}
+            </ErrorBoundary>
           </div>
         </main>
       </div>
@@ -225,7 +228,7 @@ function SidebarItem({ icon, label, active, onClick }: { icon: React.ReactNode; 
         active ? 'bg-white/10 border border-white/10 text-white shadow-sm' : 'text-slate-400 hover:text-white border border-transparent'
       )}
     >
-      {React.cloneElement(icon as React.ReactElement, { className: 'w-4 h-4' })}
+      {React.cloneElement(icon as React.ReactElement<{ className?: string }>, { className: 'w-4 h-4' })}
       <span className="text-sm font-medium">{label}</span>
     </button>
   );
@@ -320,7 +323,8 @@ function ProductsTab() {
     setLoading(true);
     try {
       const res = await fetch('/api/products');
-      setProducts(await res.json());
+      const data = await res.json();
+      setProducts(Array.isArray(data) ? data : []);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
@@ -509,13 +513,15 @@ function HistoryTab() {
     setSelectedSessao(null);
     setMensagens([]);
     const res = await fetch(`/api/vendedores/${vendedor.id}/sessoes`);
-    setSessoes(await res.json());
+    const data = await res.json();
+    setSessoes(Array.isArray(data) ? data : []);
   };
 
   const loadMensagens = async (sessao: any) => {
     setSelectedSessao(sessao);
     const res = await fetch(`/api/sessoes/${sessao.id}/mensagens`);
-    setMensagens(await res.json());
+    const data = await res.json();
+    setMensagens(Array.isArray(data) ? data : []);
   };
 
   const statusBadge = (status: string) => {
@@ -850,7 +856,8 @@ function ClientesTab() {
       if (query) qs.set('q', query);
       qs.set('limit', '200');
       const res = await fetch(`/api/clientes?${qs.toString()}`);
-      setList(await res.json());
+      const data = await res.json();
+      setList(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error(e);
     } finally {
