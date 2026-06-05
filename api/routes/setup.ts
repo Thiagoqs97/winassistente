@@ -5,7 +5,9 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 
 export const setupRouter = Router();
 
-setupRouter.use(requireAuth, requireRole('admin'));
+// Escopado no caminho: um `.use` sem path bloquearia (403) requests de outros routers
+// montados depois em '/api' — em especial o dashboardRouter. Ver comentário em server.ts.
+setupRouter.use('/setup-webhook', requireAuth, requireRole('admin'));
 
 setupRouter.post('/setup-webhook', async (req, res) => {
   const { appUrl } = req.body;

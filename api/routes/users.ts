@@ -6,8 +6,12 @@ import { requireAuth, requireRole, type AuthRequest } from '../middleware/auth.j
 
 export const usersRouter = Router();
 
-// Todas as rotas exigem admin.
-usersRouter.use(requireAuth, requireRole('admin'));
+// Admin-only, mas ESCOPADO nos caminhos do router. Um `.use` sem path dispara para
+// QUALQUER request que entra neste router — inclusive os destinados a outros routers
+// montados depois em '/api' (products, clientes, dashboard, ...). Sem o escopo, toda
+// subconta (role 'sub') tomava 403 'Sem permissão' aqui antes de chegar ao destino.
+usersRouter.use('/users', requireAuth, requireRole('admin'));
+usersRouter.use('/permissions', requireAuth, requireRole('admin'));
 
 function sanitizePermissions(input: unknown): Permission[] {
   if (!Array.isArray(input)) return [];
