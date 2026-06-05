@@ -1974,20 +1974,45 @@ function DashboardTab() {
     setLoading(true);
     setError('');
     const qs = `?de=${range.de}&ate=${range.ate}`;
-    Promise.all([
-      fetch(`/api/dashboard/kpis${qs}`).then(r => r.json()),
-      fetch(`/api/dashboard/funil${qs}`).then(r => r.json()),
-      fetch(`/api/dashboard/custo-ia${qs}`).then(r => r.json()),
-      fetch(`/api/dashboard/ranking-vendedores${qs}`).then(r => r.json()),
-      fetch(`/api/dashboard/top-produtos${qs}`).then(r => r.json()),
-      fetch(`/api/dashboard/clientes${qs}`).then(r => r.json()),
-    ]).then(([k, f, c, r, p, cl]) => {
+    // fetch não rejeita em 4xx/5xx: precisamos checar r.ok e lançar, senão o
+    // corpo de erro ({ error }) vira "dado" e o render quebra ao acessar
+    // .rows/.por_modelo/etc — exatamente o crash que cai no ErrorBoundary.
+    const getJson = async (url: string) => {
+      const r = await fetch(url);
+      const body = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(body?.error || `HTTP ${r.status}`);
+      return body;
+    };
+    // Cada endpoint é independente: uma falha isolada não pode zerar o resto.
+    const endpoints: [string, (v: any) => void, string][] = [
+      [`/api/dashboard/kpis${qs}`, setKpis, 'KPIs'],
+      [`/api/dashboard/funil${qs}`, setFunil, 'funil'],
+      [`/api/dashboard/custo-ia${qs}`, setCusto, 'custo de IA'],
+      [`/api/dashboard/ranking-vendedores${qs}`, setRanking, 'ranking'],
+      [`/api/dashboard/top-produtos${qs}`, setProdutos, 'produtos'],
+      [`/api/dashboard/clientes${qs}`, setClientes, 'clientes'],
+    ];
+    // Sequencial DE PROPÓSITO: disparar os 6 em paralelo — cada um com várias
+    // sub-queries — saturava o pool (max 5) e o webhook concorre pelas mesmas
+    // conexões; sob carga, endpoints caíam com 500. Um de cada vez nunca satura
+    // e as seções aparecem progressivamente conforme carregam.
+    (async () => {
+      const errs: string[] = [];
+      for (const [url, setter, label] of endpoints) {
+        if (cancelled) return;
+        try {
+          const data = await getJson(url);
+          if (!cancelled) setter(data);
+        } catch (err: any) {
+          if (cancelled) return;
+          setter(null); // limpa dado obsoleto e mantém o skeleton em vez de quebrar
+          errs.push(`${label}: ${err?.message || 'erro'}`);
+        }
+      }
       if (cancelled) return;
-      setKpis(k); setFunil(f); setCusto(c); setRanking(r); setProdutos(p); setClientes(cl);
-    }).catch(err => {
-      if (cancelled) return;
-      setError(err?.message || 'Falha ao carregar dashboard');
-    }).finally(() => { if (!cancelled) setLoading(false); });
+      if (errs.length) setError(`Não foi possível carregar parte do dashboard — ${errs.join(' · ')}`);
+      setLoading(false);
+    })();
     return () => { cancelled = true; };
   }, [range.de, range.ate]);
 
