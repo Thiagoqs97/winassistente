@@ -150,12 +150,25 @@ export async function mapearProdutos(): Promise<MapearResult> {
   return { ourTotal: ours.length, mapped: ourIds.length, bySku: bySkuCount, byName: byNameCount };
 }
 
+// Sniff por magic bytes quando o servidor não manda um content-type image/*
+// confiável (o S3 do Bling às vezes devolve octet-stream nas URLs assinadas).
+function sniffImage(b: Buffer): string | null {
+  if (b.length < 12) return null;
+  if (b[0] === 0xff && b[1] === 0xd8) return 'image/jpeg';
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'image/gif';
+  if (b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+
 async function downloadImagem(url: string): Promise<{ buffer: Buffer; contentType: string } | null> {
   try {
     const res = await axios.get<ArrayBuffer>(url, { responseType: 'arraybuffer', timeout: 20000 });
-    const contentType = String(res.headers['content-type'] ?? 'image/jpeg');
-    if (!contentType.startsWith('image/')) return null;
-    return { buffer: Buffer.from(res.data), contentType };
+    const buffer = Buffer.from(res.data);
+    if (buffer.length === 0) return null;
+    const header = String(res.headers['content-type'] ?? '');
+    const contentType = header.startsWith('image/') ? header : (sniffImage(buffer) ?? 'image/jpeg');
+    return { buffer, contentType };
   } catch {
     return null;
   }
