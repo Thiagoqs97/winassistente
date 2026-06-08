@@ -85,20 +85,48 @@ blingRouter.get('/bling/status', requireAuth, requireRole('admin'), async (_req,
   }
 });
 
-// Inspetor: detalhe cru de 1 produto do Bling — pra conferir onde vem a imagem.
-blingRouter.get('/bling/sample', requireAuth, requireRole('admin'), async (_req, res) => {
+// Inspetor pra confirmar onde vem a imagem:
+//  - ?sku=XXX  -> detalhe cru do produto com aquele código no Bling
+//  - sem param -> varre os primeiros ~120 e devolve o 1º COM imagem (e quantos
+//                 dos varridos tinham foto, pra dar uma ideia do hit-rate)
+blingRouter.get('/bling/sample', requireAuth, requireRole('admin'), async (req, res) => {
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
   try {
-    let first: BlingProduto | null = null;
-    for await (const p of iterateProdutos()) {
-      first = p;
-      break;
-    }
-    if (!first) {
-      res.json({ erro: 'nenhum produto no Bling' });
+    const sku = typeof req.query.sku === 'string' ? req.query.sku.trim() : '';
+
+    if (sku) {
+      let found: BlingProduto | null = null;
+      for await (const p of iterateProdutos()) {
+        if ((p.codigo ?? '').trim() === sku) {
+          found = p;
+          break;
+        }
+      }
+      if (!found) {
+        res.json({ erro: `SKU ${sku} não encontrado no Bling` });
+        return;
+      }
+      const detalhe = await getProdutoDetalhe(found.id);
+      res.json({ blingId: found.id, codigo: found.codigo, nome: found.nome, detalhe });
       return;
     }
-    const detalhe = await getProdutoDetalhe(first.id);
-    res.json({ blingId: first.id, codigo: first.codigo, nome: first.nome, detalhe });
+
+    let scanned = 0;
+    let comImagem = 0;
+    let exemplo: unknown = null;
+    for await (const p of iterateProdutos()) {
+      scanned++;
+      const d = await getProdutoDetalhe(p.id);
+      const imgs = d.data?.midia?.imagens;
+      const tem = (imgs?.externas?.length ?? 0) + (imgs?.internas?.length ?? 0) + (imgs?.imagensURL?.length ?? 0) > 0;
+      if (tem) {
+        comImagem++;
+        if (!exemplo) exemplo = { blingId: p.id, codigo: p.codigo, nome: p.nome, midia: d.data?.midia };
+      }
+      if (scanned >= 120) break;
+      await sleep(350);
+    }
+    res.json({ scanned, comImagem, exemplo });
   } catch (err) {
     res.status(500).json({ erro: err instanceof Error ? err.message : 'erro' });
   }

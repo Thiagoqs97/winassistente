@@ -161,7 +161,7 @@ export async function* iterateProdutos(): AsyncGenerator<BlingProduto> {
   }
 }
 
-interface ProdutoDetalhe {
+export interface ProdutoDetalhe {
   data?: {
     id?: number;
     nome?: string;
@@ -169,8 +169,9 @@ interface ProdutoDetalhe {
     imagemURL?: string;
     midia?: {
       imagens?: {
-        externas?: Array<{ link?: string }>;
-        internas?: Array<{ link?: string }>;
+        externas?: unknown[];
+        internas?: unknown[];
+        imagensURL?: unknown[];
       };
     };
   };
@@ -182,13 +183,30 @@ export async function getProdutoDetalhe(id: number): Promise<ProdutoDetalhe> {
   return blingGet<ProdutoDetalhe>(`/produtos/${id}`);
 }
 
-// Extrai a URL da imagem do detalhe, tentando os caminhos conhecidos do Bling
-// (defensivo: a estrutura exata pode variar). Externas primeiro (catálogo).
+// Pega a 1a URL http de um array que pode conter strings OU objetos com a URL
+// em algum campo conhecido (link/url/imageUrl/src). Defensivo: a estrutura
+// exata de cada imagem do Bling varia entre externas/internas/imagensURL.
+function primeiraUrl(arr: unknown): string | null {
+  if (!Array.isArray(arr)) return null;
+  for (const item of arr) {
+    if (typeof item === 'string' && item.startsWith('http')) return item;
+    if (item && typeof item === 'object') {
+      const o = item as Record<string, unknown>;
+      const cand = o.link ?? o.url ?? o.imageUrl ?? o.src;
+      if (typeof cand === 'string' && cand.startsWith('http')) return cand;
+    }
+  }
+  return null;
+}
+
+// Extrai a URL da imagem do detalhe. Externas primeiro (catálogo/público),
+// depois imagensURL, depois internas, e por fim o imagemURL legado.
 export function extrairImagemUrl(d: ProdutoDetalhe): string | null {
   const imgs = d?.data?.midia?.imagens;
-  const ext = imgs?.externas?.find((i) => i.link)?.link;
-  if (ext) return ext;
-  const int = imgs?.internas?.find((i) => i.link)?.link;
-  if (int) return int;
-  return d?.data?.imagemURL ?? null;
+  return (
+    primeiraUrl(imgs?.externas) ??
+    primeiraUrl(imgs?.imagensURL) ??
+    primeiraUrl(imgs?.internas) ??
+    (d?.data?.imagemURL && d.data.imagemURL.startsWith('http') ? d.data.imagemURL : null)
+  );
 }
