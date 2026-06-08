@@ -18,6 +18,7 @@ import { configRouter } from './routes/config.js';
 import { setupRouter } from './routes/setup.js';
 import { dashboardRouter } from './routes/dashboard.js';
 import { webhookRouter } from './routes/webhook.js';
+import { blingRouter } from './routes/bling.js';
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
@@ -43,6 +44,11 @@ app.use(async (req, _res, next) => {
 // router — inclusive paths que ele não declara. Se o webhook ficar depois deles,
 // o primeiro router protegido intercepta o POST do Evolution e devolve 401.
 app.use('/api', webhookRouter);
+
+// Bling montado logo após o webhook: o callback (/api/bling/callback) é PÚBLICO
+// (o Bling redireciona o navegador pra cá) e não pode ser interceptado pelos
+// guards dos routers do painel. As demais rotas do bling usam guard por-rota.
+app.use('/api', blingRouter);
 
 // Rotas públicas (login) e rotas com autenticação própria via cookie/JWT.
 // O middleware de auth é aplicado dentro de cada router que precisa.

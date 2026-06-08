@@ -37,6 +37,9 @@ async function initDB(): Promise<void> {
     // tags: palavras-chave/sinônimos curados manualmente no painel para reforçar a busca
     // do agente (ex.: produto descrito como "ômega" ganha tag "omega 3 epa dha").
     await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS tags TEXT;`);
+    // imagem_url: URL pública da foto do produto no Supabase Storage. Alimentada
+    // pelo sync do Bling (Fase A do catálogo) e exibida na vitrine pública.
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS imagem_url TEXT;`);
 
     await client.query(`
       CREATE INDEX IF NOT EXISTS trgm_idx_products_descricao
@@ -49,6 +52,20 @@ async function initDB(): Promise<void> {
     await client.query(`
       CREATE INDEX IF NOT EXISTS trgm_idx_products_tags
       ON products USING GIN (lower(coalesce(tags, '')) gin_trgm_ops);
+    `);
+
+    // Tokens OAuth do Bling (linha única, id sempre = 1). Usado só pra puxar a
+    // imagem dos produtos. O refresh_token é renovado a cada uso (validade 30d).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS bling_auth (
+        id INT PRIMARY KEY DEFAULT 1,
+        access_token TEXT,
+        refresh_token TEXT,
+        expires_at TIMESTAMPTZ,
+        scope TEXT,
+        updated_at TIMESTAMPTZ DEFAULT now(),
+        CONSTRAINT bling_auth_singleton CHECK (id = 1)
+      );
     `);
 
     await client.query(`

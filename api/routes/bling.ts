@@ -1,0 +1,128 @@
+import { Router } from 'express';
+import { randomBytes } from 'crypto';
+import { requireAuth, requireRole, type AuthRequest } from '../middleware/auth.js';
+import { logger } from '../lib/logger.js';
+import { getAuthorizeUrl, exchangeCode, getConnectionStatus } from '../services/bling.js';
+import { diagnosticoBling, type DiagnosticoResult } from '../services/bling-sync.js';
+
+export const blingRouter = Router();
+
+const STATE_COOKIE = 'bling_oauth_state';
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string);
+}
+
+function page(titulo: string, corpo: string): string {
+  return `<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>${titulo}</title>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:40px;line-height:1.5}
+.card{max-width:760px;margin:0 auto;background:#1e293b;border:1px solid #334155;border-radius:14px;padding:28px}
+h1{margin:0 0 12px;font-size:22px}h2{font-size:16px;margin:24px 0 8px}a{color:#818cf8}
+table{border-collapse:collapse;width:100%;margin-top:12px}td,th{padding:8px 10px;border-bottom:1px solid #334155;text-align:left;font-size:14px}
+.big{font-size:34px;font-weight:700;margin:4px 0}.muted{color:#94a3b8}.ok{color:#4ade80}</style></head>
+<body><div class="card">${corpo}</div></body></html>`;
+}
+
+// 1) Inicia o OAuth: gera state, salva em cookie httpOnly e redireciona pro Bling.
+blingRouter.get('/bling/authorize', requireAuth, requireRole('admin'), (_req: AuthRequest, res) => {
+  if (!process.env.BLING_CLIENT_ID) {
+    res.status(500).send(page('Erro', '<h1>BLING_CLIENT_ID não configurado no ambiente</h1>'));
+    return;
+  }
+  const state = randomBytes(16).toString('hex');
+  res.cookie(STATE_COOKIE, state, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: true,
+    maxAge: 10 * 60 * 1000,
+  });
+  res.redirect(getAuthorizeUrl(state));
+});
+
+// 2) Callback PÚBLICO — o Bling redireciona o navegador pra cá com ?code & ?state.
+//    Protegido por comparação do state com o cookie (CSRF).
+blingRouter.get('/bling/callback', async (req, res) => {
+  const code = typeof req.query.code === 'string' ? req.query.code : '';
+  const state = typeof req.query.state === 'string' ? req.query.state : '';
+  const expected = (req as { cookies?: Record<string, string> }).cookies?.[STATE_COOKIE];
+  if (!code) {
+    res.status(400).send(page('Erro', '<h1>Faltou o parâmetro <code>code</code></h1>'));
+    return;
+  }
+  if (!expected || state !== expected) {
+    res.status(400).send(page('Erro de segurança', '<h1>O <code>state</code> não confere</h1><p>Conecte de novo pelo painel.</p>'));
+    return;
+  }
+  try {
+    await exchangeCode(code);
+    res.clearCookie(STATE_COOKIE);
+    res.send(page('Bling conectado', '<h1 class="ok">Bling conectado ✓</h1><p>Pode fechar esta aba e voltar ao painel.</p>'));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Erro ao trocar o código por token.';
+    logger.error('Bling callback erro', { err: msg });
+    res.status(500).send(page('Falhou', `<h1>Não consegui conectar</h1><p class="muted">${escapeHtml(msg)}</p>`));
+  }
+});
+
+blingRouter.get('/bling/status', requireAuth, requireRole('admin'), async (_req, res) => {
+  try {
+    res.json(await getConnectionStatus());
+  } catch {
+    res.status(500).json({ error: 'Erro ao consultar status do Bling' });
+  }
+});
+
+// 3) Diagnóstico (dry-run): mede o casamento, NÃO baixa imagem nenhuma.
+//    ?format=json devolve os dados; ?format=csv baixa a lista de faltantes.
+blingRouter.get('/bling/diagnostico', requireAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const r = await diagnosticoBling();
+    const format = typeof req.query.format === 'string' ? req.query.format : 'html';
+
+    if (format === 'json') {
+      res.json(r);
+      return;
+    }
+    if (format === 'csv') {
+      const linhas = ['id,codigo,descricao'];
+      for (const f of r.faltantes) {
+        const codigo = (f.codigo ?? '').replace(/"/g, '""');
+        const descricao = f.descricao.replace(/"/g, '""');
+        linhas.push(`${f.id},"${codigo}","${descricao}"`);
+      }
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="bling-faltantes.csv"');
+      res.send('﻿' + linhas.join('\r\n')); // BOM p/ Excel abrir acento certo
+      return;
+    }
+    res.send(renderReport(r));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '';
+    logger.error('Bling diagnóstico erro', { err: msg });
+    res.status(500).send(page('Erro no diagnóstico', `<h1>Falhou</h1><p class="muted">${escapeHtml(msg)}</p>`));
+  }
+});
+
+function renderReport(r: DiagnosticoResult): string {
+  const pct = r.ourTotal ? Math.round((r.matchedTotal / r.ourTotal) * 100) : 0;
+  const amostra = r.faltantes
+    .slice(0, 50)
+    .map((f) => `<tr><td class="muted">${escapeHtml(f.codigo ?? '--')}</td><td>${escapeHtml(f.descricao)}</td></tr>`)
+    .join('');
+  return page(
+    'Diagnóstico Bling',
+    `<h1>Diagnóstico de casamento — Bling</h1>
+     <div class="big ok">${r.matchedTotal} <span class="muted" style="font-size:16px">de ${r.ourTotal} (${pct}%) com match seguro</span></div>
+     <table>
+       <tr><th>Produtos no nosso sistema (ativos)</th><td>${r.ourTotal}</td></tr>
+       <tr><th>Produtos no Bling</th><td>${r.blingTotal}</td></tr>
+       <tr><th>Match por código (SKU)</th><td>${r.matchedBySku}</td></tr>
+       <tr><th>Match por nome exato</th><td>${r.matchedByName}</td></tr>
+       <tr><th>Sem match seguro (faltantes)</th><td>${r.faltantes.length}</td></tr>
+     </table>
+     <p style="margin-top:18px"><a href="/api/bling/diagnostico?format=csv">⬇️ Baixar CSV dos ${r.faltantes.length} faltantes</a> &nbsp;·&nbsp; <a href="/api/bling/diagnostico?format=json">ver JSON</a></p>
+     <h2>Amostra dos faltantes (até 50)</h2>
+     <table><tr><th>Código</th><th>Descrição</th></tr>${amostra}</table>`,
+  );
+}

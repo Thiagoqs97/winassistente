@@ -19,3 +19,5 @@ dbtest.mjs
 run-sql.ts
 qrcode.png
 metadata.json
+
+.vercel
