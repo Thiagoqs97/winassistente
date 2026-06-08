@@ -2,8 +2,20 @@ import { Router } from 'express';
 import { randomBytes } from 'crypto';
 import { requireAuth, requireRole, type AuthRequest } from '../middleware/auth.js';
 import { logger } from '../lib/logger.js';
-import { getAuthorizeUrl, exchangeCode, getConnectionStatus } from '../services/bling.js';
-import { diagnosticoBling, type DiagnosticoResult } from '../services/bling-sync.js';
+import {
+  getAuthorizeUrl,
+  exchangeCode,
+  getConnectionStatus,
+  iterateProdutos,
+  getProdutoDetalhe,
+  type BlingProduto,
+} from '../services/bling.js';
+import {
+  diagnosticoBling,
+  mapearProdutos,
+  syncImagensBatch,
+  type DiagnosticoResult,
+} from '../services/bling-sync.js';
 
 export const blingRouter = Router();
 
@@ -13,9 +25,9 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string);
 }
 
-function page(titulo: string, corpo: string): string {
+function page(titulo: string, corpo: string, headExtra = ''): string {
   return `<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>${titulo}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>${titulo}</title>${headExtra}
 <style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:40px;line-height:1.5}
 .card{max-width:760px;margin:0 auto;background:#1e293b;border:1px solid #334155;border-radius:14px;padding:28px}
 h1{margin:0 0 12px;font-size:22px}h2{font-size:16px;margin:24px 0 8px}a{color:#818cf8}
@@ -73,6 +85,25 @@ blingRouter.get('/bling/status', requireAuth, requireRole('admin'), async (_req,
   }
 });
 
+// Inspetor: detalhe cru de 1 produto do Bling — pra conferir onde vem a imagem.
+blingRouter.get('/bling/sample', requireAuth, requireRole('admin'), async (_req, res) => {
+  try {
+    let first: BlingProduto | null = null;
+    for await (const p of iterateProdutos()) {
+      first = p;
+      break;
+    }
+    if (!first) {
+      res.json({ erro: 'nenhum produto no Bling' });
+      return;
+    }
+    const detalhe = await getProdutoDetalhe(first.id);
+    res.json({ blingId: first.id, codigo: first.codigo, nome: first.nome, detalhe });
+  } catch (err) {
+    res.status(500).json({ erro: err instanceof Error ? err.message : 'erro' });
+  }
+});
+
 // 3) Diagnóstico (dry-run): mede o casamento, NÃO baixa imagem nenhuma.
 //    ?format=json devolve os dados; ?format=csv baixa a lista de faltantes.
 blingRouter.get('/bling/diagnostico', requireAuth, requireRole('admin'), async (req, res) => {
@@ -101,6 +132,42 @@ blingRouter.get('/bling/diagnostico', requireAuth, requireRole('admin'), async (
     const msg = err instanceof Error ? err.message : '';
     logger.error('Bling diagnóstico erro', { err: msg });
     res.status(500).send(page('Erro no diagnóstico', `<h1>Falhou</h1><p class="muted">${escapeHtml(msg)}</p>`));
+  }
+});
+
+// 4) Mapeamento: grava products.bling_id pros que casam (roda uma vez).
+blingRouter.get('/bling/mapear', requireAuth, requireRole('admin'), async (_req, res) => {
+  try {
+    res.json(await mapearProdutos());
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '';
+    logger.error('Bling mapear erro', { err: msg });
+    res.status(500).json({ erro: msg });
+  }
+});
+
+// 5) Sync de imagens em lote. Roda ~3,5min por requisição e se auto-recarrega
+//    (meta refresh) ate terminar — e so deixar a aba aberta.
+blingRouter.get('/bling/sync-imagens', requireAuth, requireRole('admin'), async (_req, res) => {
+  try {
+    const r = await syncImagensBatch();
+    const headExtra = r.done ? '' : '<meta http-equiv="refresh" content="3">';
+    const status = r.done
+      ? '<h1 class="ok">Sync concluído ✓</h1>'
+      : '<h1>Sincronizando imagens… <span class="muted" style="font-size:14px">(recarrega sozinho)</span></h1>';
+    const corpo = `${status}
+      <table>
+        <tr><th>Processados neste lote</th><td>${r.processed}</td></tr>
+        <tr><th>Com foto baixada</th><td class="ok">${r.comFoto}</td></tr>
+        <tr><th>Sem foto no Bling</th><td>${r.semFoto}</td></tr>
+        <tr><th>Faltam processar</th><td>${r.restantes}</td></tr>
+      </table>
+      ${r.done ? '<p style="margin-top:16px">Pode fechar esta aba.</p>' : '<p class="muted" style="margin-top:16px">Não feche a aba até zerar os restantes.</p>'}`;
+    res.send(page('Sync de imagens — Bling', corpo, headExtra));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '';
+    logger.error('Bling sync-imagens erro', { err: msg });
+    res.status(500).send(page('Erro no sync', `<h1>Falhou</h1><p class="muted">${escapeHtml(msg)}</p>`));
   }
 });
 

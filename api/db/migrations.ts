@@ -40,6 +40,11 @@ async function initDB(): Promise<void> {
     // imagem_url: URL pública da foto do produto no Supabase Storage. Alimentada
     // pelo sync do Bling (Fase A do catálogo) e exibida na vitrine pública.
     await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS imagem_url TEXT;`);
+    // bling_id: id do produto correspondente no Bling (preenchido pelo /bling/mapear).
+    // imagem_sync_em: marca que o produto já passou pelo sync de imagem (com ou sem
+    // foto encontrada) — serve de cursor pro lote retomar de onde parou.
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS bling_id INTEGER;`);
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS imagem_sync_em TIMESTAMPTZ;`);
 
     await client.query(`
       CREATE INDEX IF NOT EXISTS trgm_idx_products_descricao

@@ -160,3 +160,35 @@ export async function* iterateProdutos(): AsyncGenerator<BlingProduto> {
     await sleep(350);
   }
 }
+
+interface ProdutoDetalhe {
+  data?: {
+    id?: number;
+    nome?: string;
+    codigo?: string;
+    imagemURL?: string;
+    midia?: {
+      imagens?: {
+        externas?: Array<{ link?: string }>;
+        internas?: Array<{ link?: string }>;
+      };
+    };
+  };
+}
+
+// Detalhe de um produto — é aqui que vem a midia/imagens. Exposto pro sync e
+// pro inspector (/bling/sample).
+export async function getProdutoDetalhe(id: number): Promise<ProdutoDetalhe> {
+  return blingGet<ProdutoDetalhe>(`/produtos/${id}`);
+}
+
+// Extrai a URL da imagem do detalhe, tentando os caminhos conhecidos do Bling
+// (defensivo: a estrutura exata pode variar). Externas primeiro (catálogo).
+export function extrairImagemUrl(d: ProdutoDetalhe): string | null {
+  const imgs = d?.data?.midia?.imagens;
+  const ext = imgs?.externas?.find((i) => i.link)?.link;
+  if (ext) return ext;
+  const int = imgs?.internas?.find((i) => i.link)?.link;
+  if (int) return int;
+  return d?.data?.imagemURL ?? null;
+}
