@@ -43,7 +43,10 @@ async function initDB(): Promise<void> {
     // bling_id: id do produto correspondente no Bling (preenchido pelo /bling/mapear).
     // imagem_sync_em: marca que o produto já passou pelo sync de imagem (com ou sem
     // foto encontrada) — serve de cursor pro lote retomar de onde parou.
-    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS bling_id INTEGER;`);
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS bling_id BIGINT;`);
+    // IDs do Bling passam de 2^31 (~16 bilhões) — promove pra BIGINT caso a
+    // coluna tenha nascido INTEGER num deploy anterior.
+    await client.query(`ALTER TABLE products ALTER COLUMN bling_id TYPE BIGINT;`);
     await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS imagem_sync_em TIMESTAMPTZ;`);
 
     await client.query(`

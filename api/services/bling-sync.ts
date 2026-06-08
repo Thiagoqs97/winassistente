@@ -141,7 +141,7 @@ export async function mapearProdutos(): Promise<MapearResult> {
     // Um UPDATE só, casando os arrays por posição (unnest).
     await pool.query(
       `UPDATE products p SET bling_id = v.bid
-       FROM (SELECT unnest($1::int[]) AS oid, unnest($2::int[]) AS bid) v
+       FROM (SELECT unnest($1::int[]) AS oid, unnest($2::bigint[]) AS bid) v
        WHERE p.id = v.oid`,
       [ourIds, blingIds],
     );
