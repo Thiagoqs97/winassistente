@@ -29,12 +29,22 @@ productsRouter.post('/upload-stock', requirePermission('products.import'), async
 
     logger.info('Importação iniciada', { colunas: Object.keys(rawData[0]) });
 
-    const getVal = (row: Record<string, any>, exactKeys: string[], partialKeys: string[]) => {
-      const keys = Object.keys(row).map(k => ({ original: k, lower: k.trim().toLowerCase() }));
+    // Resolve a CHAVE original da coluna que casa (exata primeiro, depois parcial).
+    // excludeKeys permite "reservar" uma coluna já consumida por outro campo —
+    // ex.: a coluna de código de barras não pode reaparecer como preço.
+    const findKey = (row: Record<string, any>, exactKeys: string[], partialKeys: string[], excludeKeys: string[] = []): string | null => {
+      const keys = Object.keys(row)
+        .filter(k => !excludeKeys.includes(k))
+        .map(k => ({ original: k, lower: k.trim().toLowerCase() }));
       const exact = keys.find(({ lower }) => exactKeys.some(ek => lower === ek.toLowerCase()));
-      if (exact) return row[exact.original];
+      if (exact) return exact.original;
       const partial = keys.find(({ lower }) => partialKeys.some(pk => lower.includes(pk.toLowerCase())));
-      return partial ? row[partial.original] : null;
+      return partial ? partial.original : null;
+    };
+
+    const getVal = (row: Record<string, any>, exactKeys: string[], partialKeys: string[], excludeKeys: string[] = []) => {
+      const key = findKey(row, exactKeys, partialKeys, excludeKeys);
+      return key ? row[key] : null;
     };
 
     // Parser de preço BR (R$ 1.234,50 → 1234.50)
@@ -82,21 +92,11 @@ productsRouter.post('/upload-stock', requirePermission('products.import'), async
         ['código', 'codigo', 'cod', 'sku', 'código interno', 'codigo interno'],
         ['códig', 'codig', 'sku']
       );
-      const precoRaw = getVal(row,
-        [
-          'tipo integração b2b venda', 'tipo integracao b2b venda',
-          'sugerir preço de venda baseado', 'sugerir preco de venda baseado',
-          'preço de venda', 'preco de venda', 'preço venda', 'preco venda',
-          'venda', 'preço', 'preco', 'valor', 'price',
-        ],
-        ['tipo integraç', 'tipo integrac', 'sugerir preç', 'sugerir prec', 'preço', 'preco', 'valor', 'venda']
-      );
-      const embalagem = getVal(row, ['embalagem', 'emb'], ['embalagem']);
-      const categoria = getVal(row,
-        ['nome da categoria', 'categoria', 'nome categoria'],
-        ['categ']
-      );
-      const codigoBarras = getVal(row,
+      // Resolvido ANTES do preço: na planilha WINTHOR o cabeçalho do código de
+      // barras é "Unidade Venda [EAN8, UPC12, EAN13, e DUN14]" e contém a palavra
+      // "venda". Sem reservar essa coluna, o matcher de preço (que casa "venda"
+      // parcialmente) gravaria o EAN como preço de venda.
+      const codigoBarrasKey = findKey(row,
         [
           'gtin unid.venda', 'gtin unid. venda', 'gtin',
           'unidade venda [ean8, upc12, ean13, e dun14]',
@@ -104,6 +104,23 @@ productsRouter.post('/upload-stock', requirePermission('products.import'), async
           'codigo de barras', 'código de barras', 'ean',
         ],
         ['gtin', 'ean', 'barras', 'codigo_barras']
+      );
+      const codigoBarras = codigoBarrasKey ? row[codigoBarrasKey] : null;
+
+      const precoRaw = getVal(row,
+        [
+          'tipo integração b2b venda', 'tipo integracao b2b venda',
+          'sugerir preço de venda baseado', 'sugerir preco de venda baseado',
+          'preço de venda', 'preco de venda', 'preço venda', 'preco venda',
+          'venda', 'preço', 'preco', 'valor', 'price',
+        ],
+        ['tipo integraç', 'tipo integrac', 'sugerir preç', 'sugerir prec', 'preço', 'preco', 'valor', 'venda'],
+        codigoBarrasKey ? [codigoBarrasKey] : []
+      );
+      const embalagem = getVal(row, ['embalagem', 'emb'], ['embalagem']);
+      const categoria = getVal(row,
+        ['nome da categoria', 'categoria', 'nome categoria'],
+        ['categ']
       );
 
       rows.push([
