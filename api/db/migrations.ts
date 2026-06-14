@@ -85,6 +85,10 @@ async function initDB(): Promise<void> {
     `);
     await client.query(`ALTER TABLE system_config ADD COLUMN IF NOT EXISTS session_timeout_hours INTEGER DEFAULT 2;`);
     await client.query(`ALTER TABLE system_config ADD COLUMN IF NOT EXISTS message_buffer_seconds INTEGER DEFAULT 5;`);
+    // whatsapp_central: número humano que recebe a notificação de pedidos do
+    // catálogo. Vazio = catálogo só registra no sistema (sem WhatsApp). Editável
+    // na tela Configurações.
+    await client.query(`ALTER TABLE system_config ADD COLUMN IF NOT EXISTS whatsapp_central TEXT;`);
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS vendedores (
@@ -103,10 +107,14 @@ async function initDB(): Promise<void> {
         iniciada_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         encerrada_em TIMESTAMP,
         status TEXT DEFAULT 'ativa' CHECK (status IN ('ativa', 'encerrada', 'orcamento_gerado')),
-        acao_pendente JSONB
+        acao_pendente JSONB,
+        origem TEXT
       );
     `);
     await client.query(`ALTER TABLE sessoes ADD COLUMN IF NOT EXISTS acao_pendente JSONB;`);
+    // origem: de onde nasceu a sessão. NULL/ausente = conversa no WhatsApp (padrão
+    // histórico); 'catalogo' = pedido criado pela vitrine pública.
+    await client.query(`ALTER TABLE sessoes ADD COLUMN IF NOT EXISTS origem TEXT;`);
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS mensagens (
