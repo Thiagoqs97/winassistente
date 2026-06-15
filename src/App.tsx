@@ -324,8 +324,41 @@ function ProductsTab() {
   const [editando, setEditando] = useState<any | null>(null);
   const [tagsEdit, setTagsEdit] = useState('');
   const [salvandoTags, setSalvandoTags] = useState(false);
+  const [taxonomia, setTaxonomia] = useState<{ slug: string; label: string }[]>([]);
+  const [salvandoCat, setSalvandoCat] = useState<number | null>(null);
 
   useEffect(() => { fetchProducts(); }, []);
+  useEffect(() => {
+    fetch('/api/products/categorias-taxonomia').then(r => r.json()).then(d => setTaxonomia(Array.isArray(d) ? d : [])).catch(() => {});
+  }, []);
+
+  const catLabel = useMemo(() => {
+    const m = new Map(taxonomia.map(c => [c.slug, c.label]));
+    return (slug: any) => (slug ? m.get(String(slug)) ?? String(slug) : null);
+  }, [taxonomia]);
+
+  // Muda a categoria do GRUPO inteiro (todos os sabores) e reflete localmente.
+  const mudarCategoria = async (p: any, novaCategoria: string) => {
+    if (!novaCategoria || novaCategoria === p.categoria) return;
+    setSalvandoCat(p.id);
+    try {
+      const usaGrupo = !!p.grupo_chave;
+      const res = await fetch(usaGrupo ? '/api/products/categoria' : `/api/products/${p.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(usaGrupo ? { grupoChave: p.grupo_chave, categoria: novaCategoria } : { categoria: novaCategoria }),
+      });
+      if (!res.ok) throw new Error('Falha ao salvar');
+      setProducts(prev => prev.map(x =>
+        (usaGrupo ? x.grupo_chave === p.grupo_chave : x.id === p.id) ? { ...x, categoria: novaCategoria } : x
+      ));
+    } catch (e) {
+      console.error(e);
+      alert('Não foi possível salvar a categoria.');
+    } finally {
+      setSalvandoCat(null);
+    }
+  };
 
   const fetchProducts = async () => {
     setLoading(true);
@@ -550,7 +583,7 @@ function ProductsTab() {
             className="w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 text-slate-200 text-sm"
           >
             <option value="">Todas</option>
-            {categorias.map(c => <option key={c} value={c}>{c}</option>)}
+            {categorias.map(c => <option key={c} value={c}>{catLabel(c) ?? c}</option>)}
           </select>
         </div>
         <div className="sm:col-span-2 lg:col-span-4 flex flex-wrap items-center gap-2">
@@ -641,7 +674,27 @@ function ProductsTab() {
                     )}
                   </td>
                   <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden md:table-cell">{p.marca || '--'}</td>
-                  <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden lg:table-cell">{p.categoria || '--'}</td>
+                  <td className="px-3 sm:px-4 py-3 text-xs hidden lg:table-cell">
+                    {taxonomia.length > 0 ? (
+                      <select
+                        value={p.categoria || ''}
+                        disabled={salvandoCat === p.id}
+                        onChange={(e) => mudarCategoria(p, e.target.value)}
+                        title="Categoria do produto (aplica a todos os sabores)"
+                        className={cn(
+                          'w-full max-w-[150px] px-2 py-1 rounded-lg bg-slate-950/50 border text-xs focus:ring-2 focus:ring-indigo-500 transition-colors disabled:opacity-50',
+                          p.categoria === 'outros' || !p.categoria
+                            ? 'border-amber-500/40 text-amber-300'
+                            : 'border-white/10 text-slate-300'
+                        )}
+                      >
+                        <option value="" disabled>— definir —</option>
+                        {taxonomia.map(c => <option key={c.slug} value={c.slug}>{c.label}</option>)}
+                      </select>
+                    ) : (
+                      <span className="text-slate-400">{catLabel(p.categoria) || '--'}</span>
+                    )}
+                  </td>
                   <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden lg:table-cell">{p.embalagem || '--'}</td>
                   <td className="px-3 sm:px-4 py-3 text-xs font-mono text-slate-500 hidden xl:table-cell">{p.codigo_barras || '--'}</td>
                   <td className="px-3 sm:px-4 py-3 text-sm font-semibold text-slate-200 whitespace-nowrap">{p.preco_venda ? `R$ ${Number(p.preco_venda).toFixed(2)}` : '--'}</td>

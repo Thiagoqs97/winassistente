@@ -1,6 +1,12 @@
 import { Router } from 'express';
 import { logger } from '../lib/logger.js';
-import { listarProdutosLoja, criarPedidoCatalogo, PedidoInvalidoError } from '../services/loja.js';
+import {
+  listarProdutosLoja,
+  listarCategoriasLoja,
+  listarMarcasLoja,
+  criarPedidoCatalogo,
+  PedidoInvalidoError,
+} from '../services/loja.js';
 
 // Router PÚBLICO do catálogo (sem auth). Tem que ser montado ANTES dos routers
 // do painel no server.ts — vários deles fazem router.use(requireAuth), que
@@ -25,13 +31,35 @@ function rateLimited(ip: string): boolean {
 lojaRouter.get('/loja/produtos', async (req, res) => {
   try {
     const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+    const categoria = typeof req.query.categoria === 'string' ? req.query.categoria : undefined;
+    const marca = typeof req.query.marca === 'string' ? req.query.marca : undefined;
     const pagina = req.query.pagina ? parseInt(String(req.query.pagina), 10) : 1;
     const limite = req.query.limite ? parseInt(String(req.query.limite), 10) : 24;
-    const out = await listarProdutosLoja({ q, pagina, limite });
+    const out = await listarProdutosLoja({ q, categoria, marca, pagina, limite });
     res.json(out);
   } catch (err: any) {
     logger.error('GET /loja/produtos falhou', { err: err?.message });
     res.status(500).json({ error: 'Erro ao listar produtos.' });
+  }
+});
+
+// Filtros da vitrine: categorias (com label da taxonomia) e marcas, ambas com
+// contagem de cards. Públicas (sem auth), como o resto do /loja.
+lojaRouter.get('/loja/categorias', async (_req, res) => {
+  try {
+    res.json(await listarCategoriasLoja());
+  } catch (err: any) {
+    logger.error('GET /loja/categorias falhou', { err: err?.message });
+    res.status(500).json({ error: 'Erro ao listar categorias.' });
+  }
+});
+
+lojaRouter.get('/loja/marcas', async (_req, res) => {
+  try {
+    res.json(await listarMarcasLoja());
+  } catch (err: any) {
+    logger.error('GET /loja/marcas falhou', { err: err?.message });
+    res.status(500).json({ error: 'Erro ao listar marcas.' });
   }
 });
 

@@ -2,6 +2,69 @@ import { pool } from '../db/pool.js';
 import { logger } from '../lib/logger.js';
 import { sendWhatsAppMessage } from './whatsapp.js';
 import { vincularOrcamento } from './negocios.js';
+import { limparTexto, parseDescricao, classificarCategoria, CATEGORIAS } from './catalogo-enrich.js';
+
+// Aceita pool OU client de transação (ambos têm .query). Permite reusar o
+// enriquecimento dentro da transação do upload de estoque.
+type Queryable = { query: (text: string, params?: any[]) => Promise<{ rows: any[] }> };
+
+// Recalcula os campos DERIVADOS de todos os produtos a partir da descrição:
+// limpa o texto (mojibake), extrai marca/nome-base/variação/grupo-chave e
+// classifica a categoria. A `categoria` só é gravada onde ainda está vazia —
+// nunca sobrescreve a curadoria manual feita na tela de revisão (nem o que o
+// upload de estoque preservou). Idempotente: rodar de novo não muda nada.
+export async function reenriquecerProdutos(
+  db: Queryable = pool,
+  opts: { forcarCategoria?: boolean } = {}
+): Promise<{ total: number; descricoesLimpas: number; categorizados: number }> {
+  const { rows } = await db.query(`SELECT id, descricao, categoria FROM products`);
+  let descricoesLimpas = 0;
+  let categorizados = 0;
+  const updates: any[][] = [];
+  for (const r of rows) {
+    const limpa = limparTexto(r.descricao);
+    if (limpa !== r.descricao) descricoesLimpas++;
+    const p = parseDescricao(limpa);
+    if (!r.categoria) categorizados++;
+    // Classifica sobre nome-base + marca (SEM o sabor) — senão palavras de sabor
+    // ("cookies", "chocolate branco") disparam regras erradas (ex.: snacks) e os
+    // sabores de um mesmo produto caem em categorias diferentes. Como o nome-base
+    // é igual dentro do grupo, isto também garante categoria consistente no grupo.
+    const cat = classificarCategoria(`${p.nomeBase} ${p.marca ?? ''}`);
+    updates.push([r.id, limpa, p.marca, p.nomeBase, p.variacao, p.variacaoTipo, p.grupoChave, cat]);
+  }
+
+  const CHUNK = 500;
+  for (let i = 0; i < updates.length; i += CHUNK) {
+    const chunk = updates.slice(i, i + CHUNK);
+    const valores = chunk
+      .map((_r, ci) => {
+        const b = ci * 8;
+        return `($${b + 1}::int,$${b + 2}::text,$${b + 3}::text,$${b + 4}::text,$${b + 5}::text,$${b + 6}::text,$${b + 7}::text,$${b + 8}::text)`;
+      })
+      .join(',');
+    // Por padrão preserva a categoria já gravada (curadoria/upload). forcarCategoria
+    // sobrescreve — usado só no backfill inicial, quando nada foi curado ainda.
+    const categoriaSet = opts.forcarCategoria
+      ? 'v.categoria'
+      : "COALESCE(NULLIF(p.categoria, ''), v.categoria)";
+    await db.query(
+      `UPDATE products p SET
+         descricao = v.descricao,
+         marca = v.marca,
+         nome_base = v.nome_base,
+         variacao = v.variacao,
+         variacao_tipo = v.variacao_tipo,
+         grupo_chave = v.grupo_chave,
+         categoria = ${categoriaSet}
+       FROM (VALUES ${valores}) AS v(id, descricao, marca, nome_base, variacao, variacao_tipo, grupo_chave, categoria)
+       WHERE p.id = v.id`,
+      chunk.flat()
+    );
+  }
+
+  return { total: rows.length, descricoesLimpas, categorizados };
+}
 
 // numero_whatsapp sentinela do "vendedor lógico" que representa os pedidos
 // nascidos no catálogo público. Não é um número real — o catálogo não conversa
@@ -9,59 +72,157 @@ import { vincularOrcamento } from './negocios.js';
 const VENDEDOR_CATALOGO_NUMERO = 'catalogo';
 const VENDEDOR_CATALOGO_NOME = 'Catálogo Online';
 
-export interface ProdutoLoja {
-  id: number;
-  descricao: string;
-  marca: string | null;
-  preco: number | null;
+export interface VariacaoLoja {
+  id: number;          // id do SKU real (o pedido referencia este id)
+  variacao: string | null;
+  preco: number;
   imagem_url: string | null;
 }
 
-// Só produtos ativos COM preço entram na vitrine — sem preço não dá pra montar
-// pedido. Busca opcional por descrição/marca via trigram (mesmo índice do agente).
+export interface GrupoLoja {
+  grupoChave: string;
+  nomeBase: string;
+  marca: string | null;
+  categoria: string | null;
+  variacaoTipo: string | null; // 'sabor' | 'cor_tamanho' | null
+  imagem: string | null;       // imagem representativa do grupo
+  precoMin: number;
+  precoMax: number;
+  totalVariacoes: number;
+  variacoes: VariacaoLoja[];
+}
+
+// Vitrine pública AGRUPADA: 1 card por produto (grupo_chave), com as variações
+// (sabores/cores) dentro. Só entram produtos ativos COM preço. O filtro (texto/
+// categoria/marca) é resolvido por GRUPO: se qualquer SKU do grupo casa, o card
+// volta com TODAS as variações (ex.: buscar "shark pro" mostra todos os sabores).
+// Os ids retornados são os SKUs reais — o pedido continua operando por SKU.
 export async function listarProdutosLoja(opts: {
   q?: string;
+  categoria?: string;
+  marca?: string;
   pagina?: number;
   limite?: number;
-}): Promise<{ itens: ProdutoLoja[]; total: number }> {
+}): Promise<{ itens: GrupoLoja[]; total: number }> {
   const limite = Math.min(Math.max(opts.limite ?? 24, 1), 60);
   const pagina = Math.max(opts.pagina ?? 1, 1);
   const offset = (pagina - 1) * limite;
   const q = (opts.q ?? '').trim();
+  const categoria = (opts.categoria ?? '').trim();
+  const marca = (opts.marca ?? '').trim();
 
-  const where = `ativo = true AND preco_venda IS NOT NULL AND preco_venda > 0`;
   const params: any[] = [];
-  let filtro = '';
+  const filtros: string[] = [];
   if (q) {
     params.push(`%${q.toLowerCase()}%`);
-    filtro = `AND (lower(descricao) LIKE $1 OR lower(coalesce(marca, '')) LIKE $1 OR lower(coalesce(tags, '')) LIKE $1)`;
+    const i = params.length;
+    filtros.push(`(lower(descricao) LIKE $${i} OR lower(coalesce(marca,'')) LIKE $${i} OR lower(coalesce(tags,'')) LIKE $${i} OR lower(coalesce(nome_base,'')) LIKE $${i})`);
   }
+  if (categoria) {
+    params.push(categoria);
+    filtros.push(`categoria = $${params.length}`);
+  }
+  if (marca) {
+    params.push(marca.toLowerCase());
+    filtros.push(`lower(coalesce(marca,'')) = $${params.length}`);
+  }
+  const filtroSql = filtros.length ? `WHERE ${filtros.join(' AND ')}` : '';
+
+  // ativos: universo da vitrine. matched: grupos que casam o filtro. base: TODOS
+  // os SKUs desses grupos (expande o grupo inteiro mesmo que o filtro de texto
+  // tenha casado um único sabor).
+  const cte = `
+    WITH ativos AS (
+      SELECT id, descricao, coalesce(nome_base, descricao) AS nome_base, marca, categoria,
+             variacao, variacao_tipo, coalesce(grupo_chave, descricao) AS grupo_chave,
+             preco_venda, imagem_url, tags
+      FROM products
+      WHERE ativo = true AND preco_venda IS NOT NULL AND preco_venda > 0
+    ),
+    matched AS (
+      SELECT DISTINCT grupo_chave FROM ativos ${filtroSql}
+    ),
+    base AS (
+      SELECT a.* FROM ativos a JOIN matched m ON a.grupo_chave = m.grupo_chave
+    ),
+    grupos AS (
+      SELECT
+        grupo_chave,
+        min(nome_base) AS nome_base,
+        max(marca) AS marca,
+        max(categoria) AS categoria,
+        max(variacao_tipo) AS variacao_tipo,
+        min(preco_venda) AS preco_min,
+        max(preco_venda) AS preco_max,
+        count(*)::int AS total_variacoes,
+        (array_remove(array_agg(imagem_url ORDER BY (imagem_url IS NOT NULL) DESC, preco_venda), NULL))[1] AS imagem,
+        jsonb_agg(jsonb_build_object(
+          'id', id, 'variacao', variacao, 'preco', preco_venda, 'imagem_url', imagem_url
+        ) ORDER BY variacao NULLS FIRST, preco_venda) AS variacoes
+      FROM base
+      GROUP BY grupo_chave
+    )`;
 
   const { rows: countRows } = await pool.query(
-    `SELECT COUNT(*)::int AS n FROM products WHERE ${where} ${filtro}`,
+    `${cte} SELECT count(*)::int AS n FROM grupos`,
     params
   );
 
   params.push(limite, offset);
   const { rows } = await pool.query(
-    `SELECT id, descricao, marca, preco_venda AS preco, imagem_url
-       FROM products
-      WHERE ${where} ${filtro}
-      ORDER BY (imagem_url IS NOT NULL) DESC, lower(descricao)
-      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    `${cte}
+     SELECT * FROM grupos
+     ORDER BY (imagem IS NOT NULL) DESC, lower(nome_base)
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
   );
 
   return {
     itens: rows.map((r) => ({
-      id: r.id,
-      descricao: r.descricao,
+      grupoChave: r.grupo_chave,
+      nomeBase: r.nome_base,
       marca: r.marca,
-      preco: r.preco === null ? null : Number(r.preco),
-      imagem_url: r.imagem_url,
+      categoria: r.categoria,
+      variacaoTipo: r.variacao_tipo,
+      imagem: r.imagem,
+      precoMin: Number(r.preco_min),
+      precoMax: Number(r.preco_max),
+      totalVariacoes: r.total_variacoes,
+      variacoes: (r.variacoes as any[]).map((v) => ({
+        id: v.id,
+        variacao: v.variacao,
+        preco: Number(v.preco),
+        imagem_url: v.imagem_url,
+      })),
     })),
     total: countRows[0].n,
   };
+}
+
+// Categorias com pelo menos um grupo na vitrine, na ordem da taxonomia, com a
+// contagem de grupos (cards) — alimenta os filtros do catálogo.
+export async function listarCategoriasLoja(): Promise<{ slug: string; label: string; total: number }[]> {
+  const { rows } = await pool.query(`
+    SELECT coalesce(categoria, 'outros') AS slug, count(DISTINCT coalesce(grupo_chave, descricao))::int AS total
+    FROM products
+    WHERE ativo = true AND preco_venda IS NOT NULL AND preco_venda > 0
+    GROUP BY 1`);
+  const contagem = new Map<string, number>(rows.map((r) => [r.slug, r.total]));
+  return CATEGORIAS
+    .map((c) => ({ slug: c.slug, label: c.label, total: contagem.get(c.slug) ?? 0 }))
+    .filter((c) => c.total > 0);
+}
+
+// Marcas com pelo menos um grupo, ordenadas por contagem (desc). Dobra acento/
+// caixa pra não duplicar marca (ex.: "UNIÃO" vs "UNIAO").
+export async function listarMarcasLoja(): Promise<{ marca: string; total: number }[]> {
+  const { rows } = await pool.query(`
+    SELECT marca, count(DISTINCT coalesce(grupo_chave, descricao))::int AS total
+    FROM products
+    WHERE ativo = true AND preco_venda IS NOT NULL AND preco_venda > 0
+      AND marca IS NOT NULL AND marca <> ''
+    GROUP BY marca ORDER BY total DESC, marca`);
+  return rows.map((r) => ({ marca: r.marca, total: r.total }));
 }
 
 function soDigitos(s: string): string {

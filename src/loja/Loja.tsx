@@ -1,18 +1,38 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiFetch, ApiError } from '../lib/api';
 
-interface Produto {
+interface Variacao {
   id: number;
-  descricao: string;
-  marca: string | null;
-  preco: number | null;
+  variacao: string | null;
+  preco: number;
   imagem_url: string | null;
 }
 
+interface Grupo {
+  grupoChave: string;
+  nomeBase: string;
+  marca: string | null;
+  categoria: string | null;
+  variacaoTipo: string | null; // 'sabor' | 'cor_tamanho' | null
+  imagem: string | null;
+  precoMin: number;
+  precoMax: number;
+  totalVariacoes: number;
+  variacoes: Variacao[];
+}
+
 interface ItemCarrinho {
-  produto: Produto;
+  id: number;
+  nomeBase: string;
+  marca: string | null;
+  variacao: string | null;
+  preco: number;
+  imagem: string | null;
   qtd: number;
 }
+
+interface Categoria { slug: string; label: string; total: number }
+interface Marca { marca: string; total: number }
 
 interface ResultadoPedido {
   numero: string;
@@ -30,13 +50,25 @@ const LIMITE = 24;
 const BTN_OURO =
   'bg-gradient-to-b from-[#f0c44a] to-[#d9a52e] hover:from-[#f5cd5f] hover:to-[#c8941f] text-[#16223f]';
 
+// Rótulo do seletor conforme o tipo de variação.
+const rotuloVariacao = (tipo: string | null) =>
+  tipo === 'cor_tamanho' ? 'Opção' : 'Sabor';
+
 export default function Loja() {
-  const [produtos, setProdutos] = useState<Produto[]>([]);
+  const [grupos, setGrupos] = useState<Grupo[]>([]);
   const [q, setQ] = useState('');
+  const [categoria, setCategoria] = useState('');
+  const [marca, setMarca] = useState('');
   const [pagina, setPagina] = useState(1);
   const [total, setTotal] = useState(0);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+
+  const [categorias, setCategorias] = useState<Categoria[]>([]);
+  const [marcas, setMarcas] = useState<Marca[]>([]);
+
+  // Variação selecionada por card (grupoChave -> id do SKU).
+  const [selecionada, setSelecionada] = useState<Record<string, number>>({});
 
   const [carrinho, setCarrinho] = useState<Record<number, ItemCarrinho>>({});
   const [carrinhoAberto, setCarrinhoAberto] = useState(false);
@@ -48,15 +80,17 @@ export default function Loja() {
   const [erroCheckout, setErroCheckout] = useState<string | null>(null);
   const [pedido, setPedido] = useState<ResultadoPedido | null>(null);
 
-  const carregar = useCallback(async (busca: string, pag: number) => {
+  const carregar = useCallback(async (busca: string, cat: string, mar: string, pag: number) => {
     setCarregando(true);
     setErro(null);
     try {
       const params = new URLSearchParams({ pagina: String(pag), limite: String(LIMITE) });
       if (busca.trim()) params.set('q', busca.trim());
-      const out = await apiFetch<{ itens: Produto[]; total: number }>(`/api/loja/produtos?${params}`);
+      if (cat) params.set('categoria', cat);
+      if (mar) params.set('marca', mar);
+      const out = await apiFetch<{ itens: Grupo[]; total: number }>(`/api/loja/produtos?${params}`);
       setTotal(out.total);
-      setProdutos((prev) => (pag === 1 ? out.itens : [...prev, ...out.itens]));
+      setGrupos((prev) => (pag === 1 ? out.itens : [...prev, ...out.itens]));
     } catch (err: any) {
       setErro(err?.message || 'Não consegui carregar os produtos.');
     } finally {
@@ -64,20 +98,31 @@ export default function Loja() {
     }
   }, []);
 
-  // Busca com debounce: volta pra página 1 a cada termo novo.
+  // Filtros (carrega categorias/marcas uma vez).
+  useEffect(() => {
+    apiFetch<Categoria[]>('/api/loja/categorias').then(setCategorias).catch(() => {});
+    apiFetch<Marca[]>('/api/loja/marcas').then(setMarcas).catch(() => {});
+  }, []);
+
+  // Busca/filtro com debounce: volta pra página 1 a cada mudança.
   useEffect(() => {
     const t = setTimeout(() => {
       setPagina(1);
-      carregar(q, 1);
-    }, 350);
+      carregar(q, categoria, marca, 1);
+    }, 300);
     return () => clearTimeout(t);
-  }, [q, carregar]);
+  }, [q, categoria, marca, carregar]);
 
-  const setQtd = (produto: Produto, qtd: number) => {
+  const variacaoAtual = (g: Grupo): Variacao => {
+    const id = selecionada[g.grupoChave];
+    return g.variacoes.find((v) => v.id === id) ?? g.variacoes[0];
+  };
+
+  const setQtd = (item: Omit<ItemCarrinho, 'qtd'>, qtd: number) => {
     setCarrinho((prev) => {
       const next = { ...prev };
-      if (qtd <= 0) delete next[produto.id];
-      else next[produto.id] = { produto, qtd };
+      if (qtd <= 0) delete next[item.id];
+      else next[item.id] = { ...item, qtd };
       return next;
     });
   };
@@ -85,7 +130,7 @@ export default function Loja() {
   const itensCarrinho = useMemo(() => Object.values(carrinho), [carrinho]);
   const totalItens = useMemo(() => itensCarrinho.reduce((s, i) => s + i.qtd, 0), [itensCarrinho]);
   const totalCarrinho = useMemo(
-    () => itensCarrinho.reduce((s, i) => s + (i.produto.preco ?? 0) * i.qtd, 0),
+    () => itensCarrinho.reduce((s, i) => s + i.preco * i.qtd, 0),
     [itensCarrinho]
   );
 
@@ -100,7 +145,7 @@ export default function Loja() {
         body: JSON.stringify({
           nome,
           telefone,
-          itens: itensCarrinho.map((i) => ({ produtoId: i.produto.id, qtd: i.qtd })),
+          itens: itensCarrinho.map((i) => ({ produtoId: i.id, qtd: i.qtd })),
         }),
       });
       setPedido(out);
@@ -119,9 +164,11 @@ export default function Loja() {
     setNome('');
     setTelefone('');
     setVista('catalogo');
-    setPagina(1);
-    carregar('', 1);
     setQ('');
+    setCategoria('');
+    setMarca('');
+    setPagina(1);
+    carregar('', '', '', 1);
   };
 
   if (vista === 'sucesso' && pedido) {
@@ -214,26 +261,49 @@ export default function Loja() {
         </div>
       </section>
 
-      {/* Selos */}
-      <div className="bg-white border-b border-slate-200">
-        <div className="max-w-6xl mx-auto px-4 py-3 grid grid-cols-3 gap-2 text-center">
-          {[
-            ['🏷️', 'Várias marcas'],
-            ['💬', 'Atendimento humano'],
-            ['📦', 'Pedido sem complicação'],
-          ].map(([ic, txt]) => (
-            <div key={txt} className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 text-[11px] sm:text-sm text-slate-600 font-medium">
-              <span className="text-lg">{ic}</span>
-              <span>{txt}</span>
-            </div>
-          ))}
+      {/* Filtros: categorias (chips com scroll) + marca (select) */}
+      <div className="bg-white border-b border-slate-200 sticky top-[68px] z-10">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
+          <div className="flex-1 flex gap-2 overflow-x-auto no-scrollbar -mx-1 px-1">
+            <button
+              onClick={() => setCategoria('')}
+              className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition border ${
+                categoria === '' ? 'bg-[#1b2a4e] text-white border-[#1b2a4e]' : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-[#1b2a4e]/40'
+              }`}
+            >
+              Todos
+            </button>
+            {categorias.map((c) => (
+              <button
+                key={c.slug}
+                onClick={() => setCategoria((cur) => (cur === c.slug ? '' : c.slug))}
+                className={`shrink-0 rounded-full px-3.5 py-1.5 text-xs font-bold transition border ${
+                  categoria === c.slug ? 'bg-[#1b2a4e] text-white border-[#1b2a4e]' : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-[#1b2a4e]/40'
+                }`}
+              >
+                {c.label} <span className="opacity-60">{c.total}</span>
+              </button>
+            ))}
+          </div>
+          {marcas.length > 0 && (
+            <select
+              value={marca}
+              onChange={(e) => setMarca(e.target.value)}
+              className="shrink-0 rounded-lg border border-slate-300 text-sm px-3 py-1.5 text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-[#e0b13c] max-w-[40vw]"
+            >
+              <option value="">Todas as marcas</option>
+              {marcas.map((m) => (
+                <option key={m.marca} value={m.marca}>{m.marca} ({m.total})</option>
+              ))}
+            </select>
+          )}
         </div>
       </div>
 
       <main className="flex-1 max-w-6xl mx-auto w-full px-4 py-6 pb-28">
         <div className="flex items-baseline justify-between mb-4">
           <h2 className="text-lg font-extrabold text-[#1b2a4e]">
-            {q ? 'Resultados' : 'Nossos produtos'}
+            {q || categoria || marca ? 'Resultados' : 'Nossos produtos'}
           </h2>
           {total > 0 && <span className="text-xs text-slate-400">{total} itens</span>}
         </div>
@@ -242,25 +312,31 @@ export default function Loja() {
           <div className="bg-red-50 text-red-700 rounded-xl p-4 text-sm mb-4">{erro}</div>
         )}
 
-        {produtos.length === 0 && !carregando && (
+        {grupos.length === 0 && !carregando && (
           <div className="text-center text-slate-400 py-20">
-            {q ? `Nenhum produto encontrado para "${q}".` : 'Nenhum produto disponível no momento.'}
+            {q || categoria || marca ? 'Nenhum produto encontrado com esses filtros.' : 'Nenhum produto disponível no momento.'}
           </div>
         )}
 
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
-          {produtos.map((p) => {
-            const noCarrinho = carrinho[p.id]?.qtd ?? 0;
+          {grupos.map((g) => {
+            const v = variacaoAtual(g);
+            const img = v.imagem_url ?? g.imagem;
+            const noCarrinho = carrinho[v.id]?.qtd ?? 0;
+            const temVariacoes = g.totalVariacoes > 1;
+            const itemBase = {
+              id: v.id, nomeBase: g.nomeBase, marca: g.marca, variacao: v.variacao, preco: v.preco, imagem: img,
+            };
             return (
               <div
-                key={p.id}
+                key={g.grupoChave}
                 className="group bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col hover:shadow-xl hover:-translate-y-0.5 transition-all"
               >
                 <div className="aspect-square bg-white p-3 flex items-center justify-center overflow-hidden">
-                  {p.imagem_url ? (
+                  {img ? (
                     <img
-                      src={p.imagem_url}
-                      alt={p.descricao}
+                      src={img}
+                      alt={g.nomeBase}
                       loading="lazy"
                       className="w-full h-full object-contain group-hover:scale-105 transition-transform"
                     />
@@ -269,24 +345,59 @@ export default function Loja() {
                   )}
                 </div>
                 <div className="px-3 pb-3 flex flex-col flex-1 border-t border-slate-100">
-                  {p.marca && (
-                    <div className="mt-2 text-[10px] font-bold text-[#c8941f] uppercase tracking-wide truncate">{p.marca}</div>
+                  {g.marca && (
+                    <div className="mt-2 text-[10px] font-bold text-[#c8941f] uppercase tracking-wide truncate">{g.marca}</div>
                   )}
-                  <div className="text-[13px] text-slate-600 leading-snug line-clamp-2 min-h-[2.4rem] mt-0.5">{p.descricao}</div>
-                  <div className="mt-2 text-lg font-extrabold text-[#1b2a4e]">{p.preco !== null ? brl(p.preco) : '—'}</div>
-                  <div className="mt-2">
+                  <div className="text-[13px] text-slate-700 font-medium leading-snug line-clamp-2 min-h-[2.4rem] mt-0.5">{g.nomeBase}</div>
+
+                  {/* Seletor de variação: chips até 6, select acima disso */}
+                  {temVariacoes && (
+                    <div className="mt-2">
+                      <div className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold mb-1">
+                        {rotuloVariacao(g.variacaoTipo)}
+                      </div>
+                      {g.variacoes.length <= 6 ? (
+                        <div className="flex flex-wrap gap-1">
+                          {g.variacoes.map((vv) => (
+                            <button
+                              key={vv.id}
+                              onClick={() => setSelecionada((s) => ({ ...s, [g.grupoChave]: vv.id }))}
+                              className={`rounded-md px-2 py-1 text-[11px] font-semibold border transition ${
+                                vv.id === v.id ? 'bg-[#1b2a4e] text-white border-[#1b2a4e]' : 'bg-white text-slate-600 border-slate-200 hover:border-[#1b2a4e]/50'
+                              }`}
+                            >
+                              {vv.variacao ?? 'Único'}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <select
+                          value={v.id}
+                          onChange={(e) => setSelecionada((s) => ({ ...s, [g.grupoChave]: Number(e.target.value) }))}
+                          className="w-full rounded-lg border border-slate-300 text-[13px] px-2 py-1.5 text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-[#e0b13c]"
+                        >
+                          {g.variacoes.map((vv) => (
+                            <option key={vv.id} value={vv.id}>{vv.variacao ?? 'Único'}</option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="mt-2 text-lg font-extrabold text-[#1b2a4e]">{brl(v.preco)}</div>
+                  <div className="mt-auto pt-2">
                     {noCarrinho === 0 ? (
                       <button
-                        onClick={() => setQtd(p, 1)}
+                        onClick={() => setQtd(itemBase, 1)}
                         className={`w-full ${BTN_OURO} text-sm font-bold rounded-lg py-2 transition`}
                       >
                         Adicionar
                       </button>
                     ) : (
                       <div className="flex items-center justify-between bg-[#1b2a4e] rounded-lg text-white">
-                        <button onClick={() => setQtd(p, noCarrinho - 1)} className="w-10 h-9 text-lg font-bold hover:text-[#e0b13c]">−</button>
+                        <button onClick={() => setQtd(itemBase, noCarrinho - 1)} className="w-10 h-9 text-lg font-bold hover:text-[#e0b13c]">−</button>
                         <span className="font-bold">{noCarrinho}</span>
-                        <button onClick={() => setQtd(p, noCarrinho + 1)} className="w-10 h-9 text-lg font-bold hover:text-[#e0b13c]">+</button>
+                        <button onClick={() => setQtd(itemBase, noCarrinho + 1)} className="w-10 h-9 text-lg font-bold hover:text-[#e0b13c]">+</button>
                       </div>
                     )}
                   </div>
@@ -296,10 +407,10 @@ export default function Loja() {
           })}
         </div>
 
-        {produtos.length < total && (
+        {grupos.length < total && (
           <div className="text-center mt-7">
             <button
-              onClick={() => { const next = pagina + 1; setPagina(next); carregar(q, next); }}
+              onClick={() => { const next = pagina + 1; setPagina(next); carregar(q, categoria, marca, next); }}
               disabled={carregando}
               className="bg-white border border-[#1b2a4e]/20 rounded-xl px-7 py-2.5 text-sm font-bold text-[#1b2a4e] hover:bg-[#1b2a4e] hover:text-white transition disabled:opacity-50"
             >
@@ -307,7 +418,7 @@ export default function Loja() {
             </button>
           </div>
         )}
-        {carregando && produtos.length === 0 && (
+        {carregando && grupos.length === 0 && (
           <div className="text-center text-slate-400 py-20">Carregando produtos...</div>
         )}
       </main>
@@ -374,23 +485,26 @@ export default function Loja() {
               </div>
             ) : (
               <div className="flex-1 overflow-y-auto p-5 space-y-3">
-                {itensCarrinho.map(({ produto, qtd }) => (
-                  <div key={produto.id} className="flex gap-3 items-center">
+                {itensCarrinho.map((item) => (
+                  <div key={item.id} className="flex gap-3 items-center">
                     <div className="w-14 h-14 rounded-lg bg-white border border-slate-200 flex items-center justify-center overflow-hidden shrink-0">
-                      {produto.imagem_url ? (
-                        <img src={produto.imagem_url} alt="" className="w-full h-full object-contain" />
+                      {item.imagem ? (
+                        <img src={item.imagem} alt="" className="w-full h-full object-contain" />
                       ) : (
                         <span className="text-xl text-slate-300">📦</span>
                       )}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm text-slate-700 line-clamp-2">{produto.descricao}</div>
-                      <div className="text-sm font-bold text-[#1b2a4e]">{produto.preco !== null ? brl(produto.preco) : '—'}</div>
+                      <div className="text-sm text-slate-700 line-clamp-2">
+                        {item.nomeBase}
+                        {item.variacao && <span className="text-slate-400"> · {item.variacao}</span>}
+                      </div>
+                      <div className="text-sm font-bold text-[#1b2a4e]">{brl(item.preco)}</div>
                     </div>
                     <div className="flex items-center gap-1 bg-[#1b2a4e] text-white rounded-lg shrink-0">
-                      <button onClick={() => setQtd(produto, qtd - 1)} className="w-8 h-8 text-lg font-bold hover:text-[#e0b13c]">−</button>
-                      <span className="font-bold w-5 text-center">{qtd}</span>
-                      <button onClick={() => setQtd(produto, qtd + 1)} className="w-8 h-8 text-lg font-bold hover:text-[#e0b13c]">+</button>
+                      <button onClick={() => setQtd(item, item.qtd - 1)} className="w-8 h-8 text-lg font-bold hover:text-[#e0b13c]">−</button>
+                      <span className="font-bold w-5 text-center">{item.qtd}</span>
+                      <button onClick={() => setQtd(item, item.qtd + 1)} className="w-8 h-8 text-lg font-bold hover:text-[#e0b13c]">+</button>
                     </div>
                   </div>
                 ))}

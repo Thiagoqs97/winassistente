@@ -3,6 +3,8 @@ import * as xlsx from 'xlsx';
 import { pool } from '../db/pool.js';
 import { logger } from '../lib/logger.js';
 import { requireAuth, requirePermission } from '../middleware/auth.js';
+import { reenriquecerProdutos } from '../services/loja.js';
+import { categoriaValida, CATEGORIAS } from '../services/catalogo-enrich.js';
 
 export const productsRouter = Router();
 
@@ -139,11 +141,14 @@ productsRouter.post('/upload-stock', requirePermission('products.import'), async
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      // Preserva as tags curadas no painel: o DELETE abaixo recria todos os produtos,
-      // então salvamos as tags por código e reaplicamos após o insert.
+      // Preserva a curadoria do painel (tags E categoria): o DELETE abaixo recria
+      // todos os produtos, então salvamos por código e reaplicamos após o insert.
+      // marca/nome_base/variacao/grupo_chave NÃO precisam ser preservados — são
+      // derivados da descrição e recalculados pelo reenriquecerProdutos no fim.
       await client.query(`
-        CREATE TEMP TABLE _saved_tags ON COMMIT DROP AS
-        SELECT codigo, tags FROM products WHERE tags IS NOT NULL AND tags <> ''
+        CREATE TEMP TABLE _saved_enrich ON COMMIT DROP AS
+        SELECT codigo, tags, categoria FROM products
+        WHERE (tags IS NOT NULL AND tags <> '') OR (categoria IS NOT NULL AND categoria <> '')
       `);
       await client.query('DELETE FROM products');
 
@@ -167,9 +172,14 @@ productsRouter.post('/upload-stock', requirePermission('products.import'), async
       }
 
       await client.query(`
-        UPDATE products p SET tags = s.tags
-        FROM _saved_tags s WHERE p.codigo = s.codigo
+        UPDATE products p SET tags = s.tags, categoria = COALESCE(s.categoria, p.categoria)
+        FROM _saved_enrich s WHERE p.codigo = s.codigo
       `);
+
+      // Limpa o mojibake das descrições e (re)deriva marca/nome-base/variação/
+      // grupo-chave + classifica a categoria dos produtos novos (sem categoria).
+      // A curadoria reaplicada acima é preservada (COALESCE no SQL do enrich).
+      await reenriquecerProdutos(client);
 
       await client.query('COMMIT');
       res.json({ message: `${inserted} produtos importados com sucesso.${skipped > 0 ? ` (${skipped} linhas ignoradas)` : ''}` });
@@ -196,16 +206,52 @@ productsRouter.get('/products', requirePermission('products.view'), async (_req,
   }
 });
 
-// Edita as tags/palavras-chave de busca de um produto (curadoria manual no painel).
+// Taxonomia de categorias do catálogo (para popular o seletor no painel).
+productsRouter.get('/products/categorias-taxonomia', requirePermission('products.view'), (_req, res) => {
+  res.json(CATEGORIAS);
+});
+
+// Reclassifica a categoria de um GRUPO inteiro (todos os SKUs/sabores do mesmo
+// produto). Ancorado em grupo_chave porque a categoria é uma propriedade do
+// produto, não do sabor — corrigir um card corrige todas as variações de uma vez.
+productsRouter.patch('/products/categoria', requirePermission('products.edit'), async (req, res) => {
+  try {
+    const { grupoChave, categoria } = req.body ?? {};
+    if (!grupoChave || typeof grupoChave !== 'string') return res.status(400).json({ error: 'grupoChave obrigatório' });
+    if (!categoriaValida(categoria)) return res.status(400).json({ error: 'Categoria inválida' });
+    const { rows } = await pool.query(
+      'UPDATE products SET categoria = $1 WHERE grupo_chave = $2 RETURNING id',
+      [categoria, grupoChave]
+    );
+    res.json({ categoria, atualizados: rows.length, ids: rows.map((r) => r.id) });
+  } catch (err) {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Edita as tags/palavras-chave de busca e/ou a categoria de um produto (curadoria
+// manual no painel). Aceita qualquer subconjunto de { tags, categoria }.
 productsRouter.patch('/products/:id', requirePermission('products.edit'), async (req, res) => {
   try {
     const id = parseInt(req.params.id);
     if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID inválido' });
-    const { tags } = req.body ?? {};
-    const val = tags == null || String(tags).trim() === '' ? null : String(tags).trim();
+    const body = req.body ?? {};
+    const sets: string[] = [];
+    const params: any[] = [];
+    if ('tags' in body) {
+      params.push(body.tags == null || String(body.tags).trim() === '' ? null : String(body.tags).trim());
+      sets.push(`tags = $${params.length}`);
+    }
+    if ('categoria' in body) {
+      if (!categoriaValida(body.categoria)) return res.status(400).json({ error: 'Categoria inválida' });
+      params.push(body.categoria);
+      sets.push(`categoria = $${params.length}`);
+    }
+    if (sets.length === 0) return res.status(400).json({ error: 'Nada para atualizar' });
+    params.push(id);
     const { rows } = await pool.query(
-      'UPDATE products SET tags = $1 WHERE id = $2 RETURNING *',
-      [val, id]
+      `UPDATE products SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
+      params
     );
     if (rows.length === 0) return res.status(404).json({ error: 'Produto não encontrado' });
     res.json(rows[0]);

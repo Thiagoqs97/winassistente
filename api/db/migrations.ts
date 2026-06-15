@@ -48,6 +48,21 @@ async function initDB(): Promise<void> {
     // coluna tenha nascido INTEGER num deploy anterior.
     await client.query(`ALTER TABLE products ALTER COLUMN bling_id TYPE BIGINT;`);
     await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS imagem_sync_em TIMESTAMPTZ;`);
+    // --- Enriquecimento do catálogo ---
+    // Campos DERIVADOS da descrição (recalculados a cada upload de estoque por
+    // api/services/catalogo-enrich.ts): título sem marca/variação, valor da
+    // variação (sabor/cor/tamanho), tipo da variação e a chave que agrupa as
+    // variações de um mesmo produto na vitrine. A marca também é derivada
+    // (coluna `marca` acima). Só `categoria` é curada à mão e preservada no
+    // re-import. O agrupamento existe SÓ para o catálogo público — o sistema dos
+    // vendedores continua operando 1 SKU por sabor.
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS nome_base TEXT;`);
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS variacao TEXT;`);
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS variacao_tipo TEXT;`);
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS grupo_chave TEXT;`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_products_grupo_chave ON products(grupo_chave);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_products_categoria ON products(categoria) WHERE ativo;`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_products_marca ON products(lower(marca)) WHERE ativo;`);
 
     await client.query(`
       CREATE INDEX IF NOT EXISTS trgm_idx_products_descricao
