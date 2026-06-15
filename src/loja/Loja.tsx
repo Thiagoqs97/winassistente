@@ -131,7 +131,6 @@ export default function Loja() {
 
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [marcas, setMarcas] = useState<Marca[]>([]);
-  const [destaques, setDestaques] = useState<Grupo[]>([]); // produtos reais p/ a vitrine do hero
 
   // Variação selecionada por card (grupoChave -> id do SKU).
   const [selecionada, setSelecionada] = useState<Record<string, number>>({});
@@ -166,14 +165,10 @@ export default function Loja() {
     }
   }, []);
 
-  // Filtros + vitrine do hero (uma vez no mount). Os destaques saem do catálogo
-  // real (primeiros itens com imagem) — não confiamos em imagem "fake".
+  // Filtros (carrega categorias/marcas uma vez).
   useEffect(() => {
     apiFetch<Categoria[]>('/api/loja/categorias').then(setCategorias).catch(() => {});
     apiFetch<Marca[]>('/api/loja/marcas').then(setMarcas).catch(() => {});
-    apiFetch<{ itens: Grupo[] }>('/api/loja/produtos?pagina=1&limite=16')
-      .then((out) => setDestaques(out.itens.filter((g) => g.imagem).slice(0, 3)))
-      .catch(() => {});
   }, []);
 
   // Busca/filtro com debounce: volta pra página 1 a cada mudança.
@@ -351,33 +346,35 @@ export default function Loja() {
         </div>
       </header>
 
-      {/* HERO editorial */}
+      {/* HERO editorial com foto de fundo (gpt-image-2: academia escura, luz dourada) */}
       <section className="relative overflow-hidden bg-[#0b1530] text-white">
-        {/* Camadas de fundo: brilho dourado + grade pontilhada + wordmark gigante */}
-        <div className="absolute inset-0 bg-dots opacity-70" />
-        <div className="absolute inset-0 bg-[radial-gradient(120%_90%_at_85%_15%,rgba(230,185,77,0.18),transparent_55%)]" />
-        <div className="absolute -right-6 -bottom-10 select-none pointer-events-none font-display font-bold uppercase text-[28vw] sm:text-[16rem] leading-none text-white/[0.03] tracking-tighter">
-          WIN
-        </div>
+        <img
+          src="/hero-bg.webp"
+          alt=""
+          fetchPriority="high"
+          className="absolute inset-0 w-full h-full object-cover"
+        />
+        {/* Overlays de legibilidade: escurece a esquerda e funde a base no navy */}
+        <div className="absolute inset-0 bg-gradient-to-r from-[#0b1530] via-[#0b1530]/85 to-[#0b1530]/20" />
+        <div className="absolute inset-0 bg-gradient-to-t from-[#0b1530] via-transparent to-[#0b1530]/30" />
         <div className="absolute left-0 top-0 h-full w-1 sm:w-1.5 bg-gradient-to-b from-[#e6b94d] via-[#cf9c2c] to-transparent" />
 
-        <div className="relative max-w-6xl mx-auto px-4 py-12 sm:py-16 lg:py-20 grid lg:grid-cols-[1.05fr_0.95fr] gap-10 items-center">
-          {/* Coluna do texto */}
-          <div>
+        <div className="relative max-w-6xl mx-auto px-4 py-16 sm:py-24 lg:py-28">
+          <div className="max-w-xl">
             <div className="flex items-center gap-3">
               <span className="h-px w-8 bg-[#e6b94d]" />
               <span className="font-display uppercase tracking-[0.28em] text-[11px] sm:text-xs text-[#e6b94d] font-semibold">
                 Distribuidora de suplementos
               </span>
             </div>
-            <h1 className="mt-4 font-display font-bold uppercase leading-[0.95] tracking-tight text-balance text-4xl sm:text-6xl lg:text-[4.4rem]">
+            <h1 className="mt-4 font-display font-bold uppercase leading-[0.95] tracking-tight text-balance text-4xl sm:text-6xl lg:text-[4.4rem] drop-shadow-[0_2px_24px_rgba(0,0,0,0.55)]">
               Do whey ao
               <br />
               pré-treino,
               <br />
               <span className="text-[#e6b94d]">no melhor preço.</span>
             </h1>
-            <p className="mt-5 text-slate-300 text-sm sm:text-lg max-w-md leading-relaxed">
+            <p className="mt-5 text-slate-200 text-sm sm:text-lg max-w-md leading-relaxed">
               Monte seu pedido direto pelo catálogo e finalize em minutos. Nossa equipe
               confirma tudo com você pelo WhatsApp.
             </p>
@@ -391,12 +388,11 @@ export default function Loja() {
               </button>
               {atalhos.length > 0 && (
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-slate-500 text-xs hidden sm:inline">Atalhos:</span>
                   {atalhos.map((c) => (
                     <button
                       key={c.slug}
                       onClick={() => irParaProdutos(c.slug)}
-                      className="rounded-lg border border-white/15 hover:border-[#e6b94d]/70 hover:text-[#e6b94d] text-slate-200 px-3 py-2 text-xs font-semibold transition"
+                      className="rounded-lg border border-white/20 bg-white/5 backdrop-blur-sm hover:border-[#e6b94d]/70 hover:text-[#e6b94d] text-slate-200 px-3 py-2 text-xs font-semibold transition"
                     >
                       {c.label}
                     </button>
@@ -408,39 +404,10 @@ export default function Loja() {
             {/* Selos de confiança */}
             <div className="mt-8 flex flex-wrap gap-x-6 gap-y-2">
               {['Marcas oficiais', 'Atacado e varejo', 'Atendimento humano'].map((t) => (
-                <span key={t} className="inline-flex items-center gap-1.5 text-slate-400 text-xs sm:text-sm">
+                <span key={t} className="inline-flex items-center gap-1.5 text-slate-300 text-xs sm:text-sm">
                   <IconCheck className="w-4 h-4 text-[#e6b94d]" /> {t}
                 </span>
               ))}
-            </div>
-          </div>
-
-          {/* Coluna da vitrine: produtos REAIS do catálogo num "palco" dourado */}
-          <div className="relative hidden lg:block h-[400px]">
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(230,185,77,0.22),transparent_62%)]" />
-            <div className="relative h-full flex items-end justify-center gap-5">
-              {destaques.length > 0 ? (
-                destaques.map((g, i) => (
-                  <div
-                    key={g.grupoChave}
-                    className={`relative bg-white rounded-2xl shadow-2xl ring-1 ring-black/5 p-4 flex flex-col ${
-                      i === 1 ? 'w-44 h-72 z-10' : 'w-40 h-60 mb-8 opacity-95'
-                    }`}
-                  >
-                    <div className="flex-1 flex items-center justify-center overflow-hidden">
-                      <img src={g.imagem!} alt={g.nomeBase} className="max-h-full max-w-full object-contain" />
-                    </div>
-                    <div className="pt-2 border-t border-slate-100">
-                      {g.marca && (
-                        <p className="font-display uppercase text-[9px] tracking-wider text-[#c8941f] font-semibold truncate">{g.marca}</p>
-                      )}
-                      <p className="text-[#111d3a] font-bold text-sm">{brl(g.precoMin)}</p>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="text-white/20 font-display uppercase tracking-widest text-sm">Carregando vitrine…</div>
-              )}
             </div>
           </div>
         </div>
