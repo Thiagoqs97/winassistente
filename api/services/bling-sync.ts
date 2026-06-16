@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { pool } from '../db/pool.js';
+import { logger } from '../lib/logger.js';
 import { iterateProdutos, getProdutoDetalhe, extrairImagemUrl, getSaldosEstoque } from './bling.js';
 import { ensureProductBucket, uploadProductImage } from './storage.js';
 
@@ -245,6 +246,7 @@ export interface EstoqueProgress {
   semInfo: number; // Bling não retornou saldo numérico p/ esses
   restantes: number;
   done: boolean;
+  ultimoErro: string | null; // motivo se o lote falhou (ex.: 403 insufficient_scope)
 }
 
 // Sincroniza o saldo de estoque dos produtos mapeados (bling_id != null) em lotes
@@ -265,9 +267,13 @@ export async function syncEstoqueBatch(budgetMs = 210000): Promise<EstoqueProgre
   let disponiveis = 0;
   let esgotados = 0;
   let semInfo = 0;
+  let ultimoErro: string | null = null;
 
   while (Date.now() - startedAt < budgetMs) {
-    const { rows } = await pool.query<{ id: number; bling_id: number }>(
+    // bling_id é BIGINT → o pg devolve como STRING; o id do produto na resposta
+    // do Bling vem como number. Normalizamos os dois p/ Number, senão o casamento
+    // no Map (chave number) falha e tudo cairia em "sem info".
+    const { rows } = await pool.query<{ id: number; bling_id: string }>(
       `SELECT id, bling_id FROM products
         WHERE ativo = true AND bling_id IS NOT NULL
           AND (estoque_sync_em IS NULL OR estoque_sync_em < $1)
@@ -277,16 +283,21 @@ export async function syncEstoqueBatch(budgetMs = 210000): Promise<EstoqueProgre
     );
     if (rows.length === 0) break;
 
-    const idsBling = rows.map((r) => r.bling_id);
+    const idsBling = rows.map((r) => Number(r.bling_id));
     const saldoPorBling = new Map<number, number>();
     try {
       for (const s of await getSaldosEstoque(idsBling)) {
         const v = s.saldoVirtual ?? s.saldoFisico;
         if (typeof v === 'number') saldoPorBling.set(s.produtoId, v);
       }
-    } catch {
-      // se o lote falhar (rate limit/erro pontual), ainda carimbamos o cursor
-      // abaixo pra não travar — o saldo fica como estava e refresca na próxima.
+    } catch (e: any) {
+      // se o lote falhar (scope/rate limit/erro pontual), ainda carimbamos o
+      // cursor abaixo pra não travar — guardamos o motivo p/ surfar no relatório.
+      const tipo = e?.response?.data?.error?.type;
+      ultimoErro = e?.response?.status
+        ? `HTTP ${e.response.status}${tipo ? ` (${tipo})` : ''}`
+        : (e?.message ?? 'erro desconhecido');
+      logger.warn('syncEstoqueBatch lote falhou', { erro: ultimoErro });
     }
 
     // 1) Carimba o lote inteiro (avança o cursor).
@@ -298,7 +309,7 @@ export async function syncEstoqueBatch(budgetMs = 210000): Promise<EstoqueProgre
     const ourIds: number[] = [];
     const saldoVals: number[] = [];
     for (const r of rows) {
-      const saldo = saldoPorBling.get(r.bling_id);
+      const saldo = saldoPorBling.get(Number(r.bling_id));
       if (saldo === undefined) {
         semInfo++;
         continue;
@@ -328,5 +339,5 @@ export async function syncEstoqueBatch(budgetMs = 210000): Promise<EstoqueProgre
         AND (estoque_sync_em IS NULL OR estoque_sync_em < $1)`,
     [runStartIso],
   );
-  return { processed, disponiveis, esgotados, semInfo, restantes: rem[0].c, done: rem[0].c === 0 };
+  return { processed, disponiveis, esgotados, semInfo, restantes: rem[0].c, done: rem[0].c === 0, ultimoErro };
 }

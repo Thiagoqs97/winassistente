@@ -216,10 +216,22 @@ blingRouter.get('/bling/sync-estoque', requireAuth, requireRole('admin'), async 
   try {
     const r = await syncEstoqueBatch();
     const headExtra = r.done ? '' : '<meta http-equiv="refresh" content="3">';
-    const status = r.done
-      ? '<h1 class="ok">Sync de estoque concluído ✓</h1>'
-      : '<h1>Sincronizando estoque… <span class="muted" style="font-size:14px">(recarrega sozinho)</span></h1>';
-    const corpo = `${status}
+    // Sinaliza o caso "rodou mas o Bling não devolveu saldo nenhum" (scope faltando):
+    // tudo caiu em semInfo e houve erro de lote → não é sucesso de verdade.
+    const semSaldoNenhum = r.disponiveis === 0 && r.esgotados === 0 && r.semInfo > 0;
+    const status = !r.done
+      ? '<h1>Sincronizando estoque… <span class="muted" style="font-size:14px">(recarrega sozinho)</span></h1>'
+      : semSaldoNenhum
+        ? '<h1>Sync rodou, mas o Bling não devolveu saldo ⚠️</h1>'
+        : '<h1 class="ok">Sync de estoque concluído ✓</h1>';
+    const avisoErro = r.ultimoErro
+      ? `<p class="muted" style="margin-top:8px;color:#fbbf24">Erro do Bling: <b>${escapeHtml(r.ultimoErro)}</b>${
+          r.ultimoErro.includes('insufficient_scope') || r.ultimoErro.includes('403')
+            ? ' — o app não tem permissão de <b>Estoques</b>. Habilite o escopo no cadastro do app no Bling e reconecte pelo painel.'
+            : ''
+        }</p>`
+      : '';
+    const corpo = `${status}${avisoErro}
       <table>
         <tr><th>Processados neste lote</th><td>${r.processed}</td></tr>
         <tr><th>Disponíveis (saldo &gt; 0)</th><td class="ok">${r.disponiveis}</td></tr>
