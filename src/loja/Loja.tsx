@@ -6,6 +6,7 @@ interface Variacao {
   variacao: string | null;
   preco: number;
   imagem_url: string | null;
+  disponivel: boolean;
 }
 
 interface Grupo {
@@ -18,6 +19,7 @@ interface Grupo {
   precoMin: number;
   precoMax: number;
   totalVariacoes: number;
+  semEstoque: boolean;
   variacoes: Variacao[];
 }
 
@@ -221,7 +223,12 @@ export default function Loja() {
 
   const variacaoAtual = (g: Grupo): Variacao => {
     const id = selecionada[g.grupoChave];
-    return g.variacoes.find((v) => v.id === id) ?? g.variacoes[0];
+    if (id !== undefined) {
+      const escolhida = g.variacoes.find((v) => v.id === id);
+      if (escolhida) return escolhida;
+    }
+    // Sem escolha explícita: prefere a 1ª variação disponível (não abre o card já esgotado).
+    return g.variacoes.find((v) => v.disponivel) ?? g.variacoes[0];
   };
 
   const setQtd = (item: Omit<ItemCarrinho, 'qtd'>, qtd: number) => {
@@ -549,6 +556,7 @@ export default function Loja() {
               const img = v.imagem_url ?? g.imagem;
               const noCarrinho = carrinho[v.id]?.qtd ?? 0;
               const temVariacoes = g.totalVariacoes > 1;
+              const indisponivel = !v.disponivel;
               const itemBase = {
                 id: v.id, nomeBase: g.nomeBase, marca: g.marca, variacao: v.variacao, preco: v.preco, imagem: img,
               };
@@ -566,12 +574,17 @@ export default function Loja() {
                         {g.totalVariacoes} {rotuloVariacoes(g.variacaoTipo)}
                       </span>
                     )}
+                    {indisponivel && (
+                      <span className="absolute top-2.5 right-2.5 z-10 bg-slate-900/85 backdrop-blur-sm text-white text-[10px] font-semibold rounded-md px-2 py-1 font-display uppercase tracking-wide">
+                        Sem estoque
+                      </span>
+                    )}
                     {img ? (
                       <img
                         src={img}
                         alt={g.nomeBase}
                         loading="lazy"
-                        className="w-full h-full object-contain group-hover:scale-[1.06] transition-transform duration-500 ease-out drop-shadow-sm"
+                        className={`w-full h-full object-contain group-hover:scale-[1.06] transition-transform duration-500 ease-out drop-shadow-sm ${indisponivel ? 'grayscale opacity-50' : ''}`}
                       />
                     ) : (
                       <IconBox className="w-10 h-10 text-slate-200" />
@@ -594,9 +607,10 @@ export default function Loja() {
                               <button
                                 key={vv.id}
                                 onClick={() => setSelecionada((s) => ({ ...s, [g.grupoChave]: vv.id }))}
+                                title={vv.disponivel ? undefined : 'Sem estoque'}
                                 className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold border transition ${
                                   vv.id === v.id ? 'bg-navy-700 text-white border-navy-700' : 'bg-white text-slate-600 border-slate-200 hover:border-navy-700/50'
-                                }`}
+                                } ${vv.disponivel ? '' : 'line-through opacity-50'}`}
                               >
                                 {vv.variacao ?? 'Único'}
                               </button>
@@ -609,7 +623,9 @@ export default function Loja() {
                             className="w-full rounded-lg border border-slate-300 text-[13px] px-2.5 py-2 text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-gold-400"
                           >
                             {g.variacoes.map((vv) => (
-                              <option key={vv.id} value={vv.id}>{vv.variacao ?? 'Único'}</option>
+                              <option key={vv.id} value={vv.id}>
+                                {vv.variacao ?? 'Único'}{vv.disponivel ? '' : ' — sem estoque'}
+                              </option>
                             ))}
                           </select>
                         )}
@@ -623,7 +639,14 @@ export default function Loja() {
                       <span className="font-display text-2xl font-bold text-ink tracking-tight tabular-nums">{brl(v.preco)}</span>
                     </div>
                     <div className="mt-auto pt-3.5">
-                      {noCarrinho === 0 ? (
+                      {indisponivel ? (
+                        <button
+                          disabled
+                          className="w-full bg-slate-100 text-slate-400 text-sm font-semibold rounded-xl py-2.5 flex items-center justify-center gap-2 cursor-not-allowed"
+                        >
+                          Sem estoque
+                        </button>
+                      ) : noCarrinho === 0 ? (
                         <button
                           onClick={() => setQtd(itemBase, 1)}
                           className="w-full bg-navy-700 hover:bg-navy-800 text-white text-sm font-semibold rounded-xl py-2.5 transition flex items-center justify-center gap-2 active:scale-[0.98]"

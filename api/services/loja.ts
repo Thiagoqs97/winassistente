@@ -77,6 +77,7 @@ export interface VariacaoLoja {
   variacao: string | null;
   preco: number;
   imagem_url: string | null;
+  disponivel: boolean; // saldo do Bling > 0 OU nunca sincronizado (não bloqueia)
 }
 
 export interface GrupoLoja {
@@ -89,6 +90,7 @@ export interface GrupoLoja {
   precoMin: number;
   precoMax: number;
   totalVariacoes: number;
+  semEstoque: boolean;         // todas as variações esgotadas
   variacoes: VariacaoLoja[];
 }
 
@@ -135,7 +137,8 @@ export async function listarProdutosLoja(opts: {
     WITH ativos AS (
       SELECT id, descricao, coalesce(nome_base, descricao) AS nome_base, marca, categoria,
              variacao, variacao_tipo, coalesce(grupo_chave, descricao) AS grupo_chave,
-             preco_venda, imagem_url, tags
+             preco_venda, imagem_url, tags,
+             (estoque_saldo IS NULL OR estoque_saldo > 0) AS disponivel
       FROM products
       WHERE ativo = true AND preco_venda IS NOT NULL AND preco_venda > 0
     ),
@@ -155,9 +158,10 @@ export async function listarProdutosLoja(opts: {
         min(preco_venda) AS preco_min,
         max(preco_venda) AS preco_max,
         count(*)::int AS total_variacoes,
+        bool_or(disponivel) AS tem_disponivel,
         (array_remove(array_agg(imagem_url ORDER BY (imagem_url IS NOT NULL) DESC, preco_venda), NULL))[1] AS imagem,
         jsonb_agg(jsonb_build_object(
-          'id', id, 'variacao', variacao, 'preco', preco_venda, 'imagem_url', imagem_url
+          'id', id, 'variacao', variacao, 'preco', preco_venda, 'imagem_url', imagem_url, 'disponivel', disponivel
         ) ORDER BY variacao NULLS FIRST, preco_venda) AS variacoes
       FROM base
       GROUP BY grupo_chave
@@ -172,7 +176,7 @@ export async function listarProdutosLoja(opts: {
   const { rows } = await pool.query(
     `${cte}
      SELECT * FROM grupos
-     ORDER BY (imagem IS NOT NULL) DESC, lower(nome_base)
+     ORDER BY tem_disponivel DESC, (imagem IS NOT NULL) DESC, lower(nome_base)
      LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
   );
@@ -188,11 +192,13 @@ export async function listarProdutosLoja(opts: {
       precoMin: Number(r.preco_min),
       precoMax: Number(r.preco_max),
       totalVariacoes: r.total_variacoes,
+      semEstoque: !r.tem_disponivel,
       variacoes: (r.variacoes as any[]).map((v) => ({
         id: v.id,
         variacao: v.variacao,
         preco: Number(v.preco),
         imagem_url: v.imagem_url,
+        disponivel: v.disponivel !== false,
       })),
     })),
     total: countRows[0].n,
@@ -305,10 +311,13 @@ export async function criarPedidoCatalogo(opts: {
   if (qtdPorId.size === 0) throw new PedidoInvalidoError('Carrinho vazio ou inválido.');
 
   const ids = [...qtdPorId.keys()];
+  // Backstop: itens esgotados (saldo do Bling <= 0) são descartados aqui, mesmo
+  // que o carrinho esteja velho. estoque_saldo NULL (nunca sincronizado) passa.
   const { rows: prods } = await pool.query(
     `SELECT id, descricao, marca, preco_venda
        FROM products
-      WHERE id = ANY($1::int[]) AND ativo = true AND preco_venda IS NOT NULL AND preco_venda > 0`,
+      WHERE id = ANY($1::int[]) AND ativo = true AND preco_venda IS NOT NULL AND preco_venda > 0
+        AND (estoque_saldo IS NULL OR estoque_saldo > 0)`,
     [ids]
   );
   if (prods.length === 0) throw new PedidoInvalidoError('Nenhum produto do carrinho está disponível.');

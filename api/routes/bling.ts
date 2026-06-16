@@ -8,12 +8,14 @@ import {
   getConnectionStatus,
   iterateProdutos,
   getProdutoDetalhe,
+  extrairSaldo,
   type BlingProduto,
 } from '../services/bling.js';
 import {
   diagnosticoBling,
   mapearProdutos,
   syncImagensBatch,
+  syncEstoqueBatch,
   type DiagnosticoResult,
 } from '../services/bling-sync.js';
 
@@ -107,7 +109,15 @@ blingRouter.get('/bling/sample', requireAuth, requireRole('admin'), async (req, 
         return;
       }
       const detalhe = await getProdutoDetalhe(found.id);
-      res.json({ blingId: found.id, codigo: found.codigo, nome: found.nome, detalhe });
+      // saldo + estoque cru em destaque pra confirmar scope/shape antes do sync.
+      res.json({
+        blingId: found.id,
+        codigo: found.codigo,
+        nome: found.nome,
+        saldo: extrairSaldo(detalhe),
+        estoque: detalhe.data?.estoque ?? null,
+        detalhe,
+      });
       return;
     }
 
@@ -195,6 +205,33 @@ blingRouter.get('/bling/sync-imagens', requireAuth, requireRole('admin'), async 
   } catch (err) {
     const msg = err instanceof Error ? err.message : '';
     logger.error('Bling sync-imagens erro', { err: msg });
+    res.status(500).send(page('Erro no sync', `<h1>Falhou</h1><p class="muted">${escapeHtml(msg)}</p>`));
+  }
+});
+
+// 6) Sync de estoque em lote. Igual ao de imagens: roda ~3,5min por requisição
+//    e se auto-recarrega (meta refresh) até zerar os restantes. Pode rodar de
+//    novo a qualquer momento pra atualizar os saldos (re-sincroniza tudo).
+blingRouter.get('/bling/sync-estoque', requireAuth, requireRole('admin'), async (_req, res) => {
+  try {
+    const r = await syncEstoqueBatch();
+    const headExtra = r.done ? '' : '<meta http-equiv="refresh" content="3">';
+    const status = r.done
+      ? '<h1 class="ok">Sync de estoque concluído ✓</h1>'
+      : '<h1>Sincronizando estoque… <span class="muted" style="font-size:14px">(recarrega sozinho)</span></h1>';
+    const corpo = `${status}
+      <table>
+        <tr><th>Processados neste lote</th><td>${r.processed}</td></tr>
+        <tr><th>Disponíveis (saldo &gt; 0)</th><td class="ok">${r.disponiveis}</td></tr>
+        <tr><th>Sem estoque (saldo ≤ 0)</th><td>${r.esgotados}</td></tr>
+        <tr><th>Sem saldo informado pelo Bling</th><td class="muted">${r.semInfo}</td></tr>
+        <tr><th>Faltam processar</th><td>${r.restantes}</td></tr>
+      </table>
+      ${r.done ? '<p style="margin-top:16px">Pode fechar esta aba.</p>' : '<p class="muted" style="margin-top:16px">Não feche a aba até zerar os restantes.</p>'}`;
+    res.send(page('Sync de estoque — Bling', corpo, headExtra));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '';
+    logger.error('Bling sync-estoque erro', { err: msg });
     res.status(500).send(page('Erro no sync', `<h1>Falhou</h1><p class="muted">${escapeHtml(msg)}</p>`));
   }
 });

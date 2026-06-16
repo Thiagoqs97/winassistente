@@ -174,6 +174,12 @@ export interface ProdutoDetalhe {
         imagensURL?: unknown[];
       };
     };
+    // O detalhe traz o estoque do produto — usado pelo inspetor (/bling/sample)
+    // pra confirmar o scope/shape antes de rodar o sync em massa via /estoques/saldos.
+    estoque?: {
+      saldoFisicoTotal?: number;
+      saldoVirtualTotal?: number;
+    };
   };
 }
 
@@ -209,4 +215,80 @@ export function extrairImagemUrl(d: ProdutoDetalhe): string | null {
     primeiraUrl(imgs?.internas) ??
     (d?.data?.imagemURL && d.data.imagemURL.startsWith('http') ? d.data.imagemURL : null)
   );
+}
+
+// Saldo (virtual, vendável) extraído do detalhe do produto. Fallback pro físico.
+// Usado pelo inspetor /bling/sample; o sync em massa usa getSaldosEstoque.
+export function extrairSaldo(d: ProdutoDetalhe): number | null {
+  const e = d?.data?.estoque;
+  if (!e) return null;
+  if (typeof e.saldoVirtualTotal === 'number') return e.saldoVirtualTotal;
+  if (typeof e.saldoFisicoTotal === 'number') return e.saldoFisicoTotal;
+  return null;
+}
+
+export interface SaldoEstoque {
+  produtoId: number;
+  saldoFisico: number | null;
+  saldoVirtual: number | null;
+}
+
+interface SaldoRow {
+  produto?: { id?: number };
+  saldoFisicoTotal?: number;
+  saldoVirtualTotal?: number;
+  depositos?: Array<{ id?: number; saldoFisico?: number; saldoVirtual?: number }>;
+}
+
+export interface SaldosPage {
+  data?: SaldoRow[];
+}
+
+// Total de um campo de saldo: prefere o *Total do topo; senão soma os depósitos.
+function totalSaldo(row: SaldoRow, campo: 'saldoFisico' | 'saldoVirtual'): number | null {
+  const top = row[`${campo}Total` as 'saldoFisicoTotal' | 'saldoVirtualTotal'];
+  if (typeof top === 'number') return top;
+  const deps = row.depositos;
+  if (Array.isArray(deps)) {
+    let soma = 0;
+    let achou = false;
+    for (const d of deps) {
+      const v = d?.[campo];
+      if (typeof v === 'number') {
+        soma += v;
+        achou = true;
+      }
+    }
+    if (achou) return soma;
+  }
+  return null;
+}
+
+// Parse defensivo da resposta do /estoques/saldos. Pula linhas sem produto.id.
+// Pra cada produto: total do topo quando vier, senão soma dos depósitos. Pure
+// (sem HTTP) pra ser testável — a estrutura do Bling varia entre contas.
+export function parseSaldosResponse(page: SaldosPage): SaldoEstoque[] {
+  const out: SaldoEstoque[] = [];
+  for (const row of page.data ?? []) {
+    const produtoId = row.produto?.id;
+    if (typeof produtoId !== 'number') continue;
+    out.push({
+      produtoId,
+      saldoFisico: totalSaldo(row, 'saldoFisico'),
+      saldoVirtual: totalSaldo(row, 'saldoVirtual'),
+    });
+  }
+  return out;
+}
+
+// Saldo de estoque de um lote de produtos (GET /estoques/saldos). idsProdutos[]
+// repetido na query; idDeposito opcional restringe a um depósito (sem ele vêm os
+// totais). Devolve saldo físico e virtual por produto retornado.
+export async function getSaldosEstoque(ids: number[], idDeposito?: number): Promise<SaldoEstoque[]> {
+  if (ids.length === 0) return [];
+  const qs = new URLSearchParams();
+  for (const id of ids) qs.append('idsProdutos[]', String(id));
+  if (idDeposito) qs.append('idDeposito', String(idDeposito));
+  const page = await blingGet<SaldosPage>(`/estoques/saldos?${qs.toString()}`);
+  return parseSaldosResponse(page);
 }

@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { pool } from '../db/pool.js';
-import { iterateProdutos, getProdutoDetalhe, extrairImagemUrl } from './bling.js';
+import { iterateProdutos, getProdutoDetalhe, extrairImagemUrl, getSaldosEstoque } from './bling.js';
 import { ensureProductBucket, uploadProductImage } from './storage.js';
 
 // Normalização p/ casamento: tira acento, minúsculo, colapsa não-alfanumérico.
@@ -234,4 +234,99 @@ export async function syncImagensBatch(budgetMs = 210000): Promise<SyncProgress>
      WHERE ativo = true AND bling_id IS NOT NULL AND imagem_sync_em IS NULL`,
   );
   return { processed, comFoto, semFoto, restantes: rem[0].c, done: rem[0].c === 0 };
+}
+
+const LOTE_SALDO = 100; // ids por chamada ao /estoques/saldos
+
+export interface EstoqueProgress {
+  processed: number;
+  disponiveis: number;
+  esgotados: number;
+  semInfo: number; // Bling não retornou saldo numérico p/ esses
+  restantes: number;
+  done: boolean;
+}
+
+// Sincroniza o saldo de estoque dos produtos mapeados (bling_id != null) em lotes
+// de 100 via /estoques/saldos. Diferente do sync de imagem (one-shot), o estoque
+// é RE-sincronizado a cada rodada: o cursor é a "frescura" (estoque_sync_em mais
+// antigo que o início DESTA requisição). Cada lote carimba estoque_sync_em do lote
+// inteiro (avança o cursor mesmo p/ produtos que o Bling não retornou) e grava o
+// estoque_saldo só dos que vieram com número. Reentrante e com orçamento de tempo
+// (a tela /bling/sync-estoque se auto-recarrega até done).
+export async function syncEstoqueBatch(budgetMs = 210000): Promise<EstoqueProgress> {
+  const startedAt = Date.now();
+  // Boundary do cursor no relógio do PRÓPRIO banco (não do Node) — assim o
+  // estoque_sync_em = now() gravado abaixo é garantidamente >= runStart e o lote
+  // não é re-selecionado por skew de relógio entre app e Postgres.
+  const { rows: nowRows } = await pool.query<{ t: string }>(`SELECT now() AS t`);
+  const runStartIso = nowRows[0].t;
+  let processed = 0;
+  let disponiveis = 0;
+  let esgotados = 0;
+  let semInfo = 0;
+
+  while (Date.now() - startedAt < budgetMs) {
+    const { rows } = await pool.query<{ id: number; bling_id: number }>(
+      `SELECT id, bling_id FROM products
+        WHERE ativo = true AND bling_id IS NOT NULL
+          AND (estoque_sync_em IS NULL OR estoque_sync_em < $1)
+        ORDER BY estoque_sync_em NULLS FIRST, id
+        LIMIT ${LOTE_SALDO}`,
+      [runStartIso],
+    );
+    if (rows.length === 0) break;
+
+    const idsBling = rows.map((r) => r.bling_id);
+    const saldoPorBling = new Map<number, number>();
+    try {
+      for (const s of await getSaldosEstoque(idsBling)) {
+        const v = s.saldoVirtual ?? s.saldoFisico;
+        if (typeof v === 'number') saldoPorBling.set(s.produtoId, v);
+      }
+    } catch {
+      // se o lote falhar (rate limit/erro pontual), ainda carimbamos o cursor
+      // abaixo pra não travar — o saldo fica como estava e refresca na próxima.
+    }
+
+    // 1) Carimba o lote inteiro (avança o cursor).
+    await pool.query(`UPDATE products SET estoque_sync_em = now() WHERE id = ANY($1::int[])`, [
+      rows.map((r) => r.id),
+    ]);
+
+    // 2) Grava o saldo dos que o Bling retornou com número.
+    const ourIds: number[] = [];
+    const saldoVals: number[] = [];
+    for (const r of rows) {
+      const saldo = saldoPorBling.get(r.bling_id);
+      if (saldo === undefined) {
+        semInfo++;
+        continue;
+      }
+      ourIds.push(r.id);
+      saldoVals.push(saldo);
+      if (saldo > 0) disponiveis++;
+      else esgotados++;
+    }
+    if (ourIds.length > 0) {
+      await pool.query(
+        `UPDATE products p SET estoque_saldo = v.saldo
+         FROM (SELECT unnest($1::int[]) AS oid, unnest($2::int[]) AS saldo) v
+         WHERE p.id = v.oid`,
+        [ourIds, saldoVals],
+      );
+    }
+
+    processed += rows.length;
+    if (Date.now() - startedAt >= budgetMs) break;
+    await sleep(350); // rate limit do Bling (3 req/s)
+  }
+
+  const { rows: rem } = await pool.query<{ c: number }>(
+    `SELECT count(*)::int AS c FROM products
+      WHERE ativo = true AND bling_id IS NOT NULL
+        AND (estoque_sync_em IS NULL OR estoque_sync_em < $1)`,
+    [runStartIso],
+  );
+  return { processed, disponiveis, esgotados, semInfo, restantes: rem[0].c, done: rem[0].c === 0 };
 }

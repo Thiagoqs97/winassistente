@@ -48,6 +48,12 @@ async function initDB(): Promise<void> {
     // coluna tenha nascido INTEGER num deploy anterior.
     await client.query(`ALTER TABLE products ALTER COLUMN bling_id TYPE BIGINT;`);
     await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS imagem_sync_em TIMESTAMPTZ;`);
+    // estoque_saldo: saldo (virtual) sincronizado do Bling via /bling/sync-estoque.
+    // NULL = nunca sincronizado (tratado como disponível na vitrine, pra não marcar
+    // tudo como esgotado antes do 1º sync). <= 0 = sem estoque. estoque_sync_em é o
+    // carimbo do último sync (todos os mapeados são atualizados a cada rodada).
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS estoque_saldo INTEGER;`);
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS estoque_sync_em TIMESTAMPTZ;`);
     // --- Enriquecimento do catálogo ---
     // Campos DERIVADOS da descrição (recalculados a cada upload de estoque por
     // api/services/catalogo-enrich.ts): título sem marca/variação, valor da
