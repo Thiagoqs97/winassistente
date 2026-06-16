@@ -322,7 +322,7 @@ export async function syncEstoqueBatch(budgetMs = 210000): Promise<EstoqueProgre
     if (ourIds.length > 0) {
       await pool.query(
         `UPDATE products p SET estoque_saldo = v.saldo
-         FROM (SELECT unnest($1::int[]) AS oid, unnest($2::int[]) AS saldo) v
+         FROM (SELECT unnest($1::int[]) AS oid, unnest($2::numeric[]) AS saldo) v
          WHERE p.id = v.oid`,
         [ourIds, saldoVals],
       );

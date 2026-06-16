@@ -52,7 +52,10 @@ async function initDB(): Promise<void> {
     // NULL = nunca sincronizado (tratado como disponível na vitrine, pra não marcar
     // tudo como esgotado antes do 1º sync). <= 0 = sem estoque. estoque_sync_em é o
     // carimbo do último sync (todos os mapeados são atualizados a cada rodada).
-    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS estoque_saldo INTEGER;`);
+    // NUMERIC (não INTEGER): o Bling devolve saldo fracionário p/ itens por peso
+    // (ex.: 651.43). Arredondar marcaria 0.3 como esgotado por engano.
+    await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS estoque_saldo NUMERIC;`);
+    await client.query(`ALTER TABLE products ALTER COLUMN estoque_saldo TYPE NUMERIC;`);
     await client.query(`ALTER TABLE products ADD COLUMN IF NOT EXISTS estoque_sync_em TIMESTAMPTZ;`);
     // --- Enriquecimento do catálogo ---
     // Campos DERIVADOS da descrição (recalculados a cada upload de estoque por
