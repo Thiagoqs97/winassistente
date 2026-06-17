@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { parseSaldosResponse, extrairSaldo } from '../api/services/bling.js';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { createHmac } from 'crypto';
+import { parseSaldosResponse, extrairSaldo, verifyBlingSignature } from '../api/services/bling.js';
 
 describe('parseSaldosResponse — saldo do /estoques/saldos (sem HTTP)', () => {
   it('usa o total do topo quando vem (virtual e físico separados)', () => {
@@ -54,5 +55,41 @@ describe('extrairSaldo — saldo do detalhe do produto (inspetor)', () => {
   it('null quando não há bloco de estoque', () => {
     expect(extrairSaldo({ data: {} })).toBeNull();
     expect(extrairSaldo({})).toBeNull();
+  });
+});
+
+describe('verifyBlingSignature — HMAC do webhook (X-Bling-Signature-256)', () => {
+  const SECRET = 'segredo-de-teste';
+  const body = Buffer.from(JSON.stringify({ event: 'stock.updated', data: { produto: { id: 1 } } }));
+  const assinar = (b: Buffer, s = SECRET): string =>
+    'sha256=' + createHmac('sha256', s).update(b).digest('hex');
+
+  beforeEach(() => {
+    process.env.BLING_CLIENT_SECRET = SECRET;
+  });
+
+  it('aceita assinatura correta', () => {
+    expect(verifyBlingSignature(body, assinar(body))).toBe(true);
+  });
+
+  it('rejeita assinatura de outro secret', () => {
+    expect(verifyBlingSignature(body, assinar(body, 'outro'))).toBe(false);
+  });
+
+  it('rejeita quando o corpo foi adulterado', () => {
+    const sig = assinar(body);
+    expect(verifyBlingSignature(Buffer.from(body.toString() + ' '), sig)).toBe(false);
+  });
+
+  it('rejeita header ausente, vazio ou sem o prefixo sha256=', () => {
+    expect(verifyBlingSignature(body, undefined)).toBe(false);
+    expect(verifyBlingSignature(body, '')).toBe(false);
+    const hexSemPrefixo = createHmac('sha256', SECRET).update(body).digest('hex');
+    expect(verifyBlingSignature(body, hexSemPrefixo)).toBe(false);
+  });
+
+  it('rejeita quando o secret não está configurado', () => {
+    delete process.env.BLING_CLIENT_SECRET;
+    expect(verifyBlingSignature(body, assinar(body))).toBe(false);
   });
 });

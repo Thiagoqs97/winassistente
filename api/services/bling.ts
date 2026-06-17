@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { pool } from '../db/pool.js';
 import { logger } from '../lib/logger.js';
 
@@ -10,6 +11,20 @@ function basicAuthHeader(): string {
   const id = process.env.BLING_CLIENT_ID ?? '';
   const secret = process.env.BLING_CLIENT_SECRET ?? '';
   return 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64');
+}
+
+// Valida a assinatura de um webhook do Bling. O header X-Bling-Signature-256 traz
+// "sha256=" + HMAC-SHA256(corpo cru, client_secret) em hex. Precisa do corpo CRU
+// (bytes exatos recebidos) — re-serializar o JSON parseado muda espaços/ordem e
+// quebra o hash. timingSafeEqual evita vazar info por tempo de comparação.
+export function verifyBlingSignature(rawBody: Buffer, header: string | undefined): boolean {
+  const secret = process.env.BLING_CLIENT_SECRET ?? '';
+  if (!secret || !header) return false;
+  const expected = 'sha256=' + createHmac('sha256', secret).update(rawBody).digest('hex');
+  const a = Buffer.from(header, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  // timingSafeEqual exige tamanhos iguais; tamanhos diferentes já reprovam.
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 export function getAuthorizeUrl(state: string): string {

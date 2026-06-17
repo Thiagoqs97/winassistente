@@ -9,6 +9,7 @@ import {
   iterateProdutos,
   getProdutoDetalhe,
   extrairSaldo,
+  verifyBlingSignature,
   type BlingProduto,
 } from '../services/bling.js';
 import {
@@ -16,6 +17,7 @@ import {
   mapearProdutos,
   syncImagensBatch,
   syncEstoqueBatch,
+  aplicarEstoqueWebhook,
   type DiagnosticoResult,
 } from '../services/bling-sync.js';
 
@@ -76,6 +78,36 @@ blingRouter.get('/bling/callback', async (req, res) => {
     const msg = err instanceof Error ? err.message : 'Erro ao trocar o código por token.';
     logger.error('Bling callback erro', { err: msg });
     res.status(500).send(page('Falhou', `<h1>Não consegui conectar</h1><p class="muted">${escapeHtml(msg)}</p>`));
+  }
+});
+
+// Webhook PÚBLICO — o Bling chama aqui quando o estoque muda (venda, lançamento).
+// Não passa por auth do painel: a legitimidade vem da assinatura HMAC sobre o
+// corpo CRU (req.rawBody, capturado no express.json do server). Atualiza só o
+// produto que mudou → tempo real, sem varrer o catálogo inteiro. O Bling exige
+// resposta 2xx em até 5s e reenvia por até 3 dias em caso de falha; por isso
+// respondemos rápido e tratamos tudo como idempotente.
+blingRouter.post('/bling/webhook', async (req: AuthRequest, res) => {
+  const rawBody = (req as unknown as { rawBody?: Buffer }).rawBody;
+  const sig = req.header('x-bling-signature-256');
+  if (!rawBody || !verifyBlingSignature(rawBody, sig)) {
+    res.status(401).json({ error: 'assinatura inválida' });
+    return;
+  }
+  try {
+    const body = req.body as { event?: string; data?: unknown };
+    const event = typeof body.event === 'string' ? body.event : '';
+    // stock = lançamento físico; virtual_stock = reserva de venda/composição.
+    if ((event.startsWith('stock.') || event.startsWith('virtual_stock.')) && body.data) {
+      const r = await aplicarEstoqueWebhook(body.data);
+      logger.info('Bling webhook estoque', { event, ...r });
+    }
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    // Ack mesmo no erro: 200 evita os 3 dias de retry do Bling por uma falha
+    // pontual nossa (o sync agendado/manual reconcilia depois se preciso).
+    logger.error('Bling webhook erro', { err: err instanceof Error ? err.message : String(err) });
+    res.status(200).json({ ok: true });
   }
 });
 

@@ -25,7 +25,16 @@ const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
 app.use(cors({ credentials: true }));
-app.use(express.json({ limit: '50mb' }));
+// `verify` guarda o corpo CRU em req.rawBody — o webhook do Bling valida a
+// assinatura HMAC sobre os bytes exatos recebidos (re-serializar quebraria o hash).
+app.use(
+  express.json({
+    limit: '50mb',
+    verify: (req, _res, buf) => {
+      (req as unknown as { rawBody?: Buffer }).rawBody = buf;
+    },
+  }),
+);
 app.use(cookieParser());
 
 // Middleware: ensure DB ready antes de qualquer request (exceto webhook,

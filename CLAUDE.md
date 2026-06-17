@@ -63,6 +63,8 @@ Variáveis em `.env` (modelo em `.env.example`):
 | Comandos slash `/ajuda` e `/status` (Fase 4 — 5.2/5.3) | `parseComandoSlash` em `api/services/intents.ts`; pré-handlers em `api/routes/webhook.ts` |
 | Histórico do cliente no WhatsApp (Fase 4 — 5.4) | intent `historico_cliente` no extractor + handler em `api/routes/webhook.ts` |
 | Alerta de variação de preço (Fase 4 — 5.5) | `api/services/precos.ts` + injeção em `buildStockContext` em `api/agents/prompts.ts` |
+| Integração Bling (OAuth + sync produtos/imagem/estoque) | `api/services/bling.ts` (HTTP/token) + `api/services/bling-sync.ts` (diagnóstico/mapear/imagens/estoque) + `api/routes/bling.ts` |
+| Webhook do Bling (estoque em tempo real) | `POST /api/bling/webhook` em `api/routes/bling.ts` (PÚBLICO, valida HMAC `verifyBlingSignature`); aplica saldo via `aplicarEstoqueWebhook` reusando `parseSaldosResponse`. `rawBody` capturado no `express.json` (`api/server.ts`) |
 | Kanban (funil de negócios) — lógica de estágio | `api/services/negocios.ts` (upsert por sessão, avançar estágio forward-only, vincular ORC, sync status) |
 | Kanban — REST (lista/mover/arquivar) | `api/routes/negocios.ts`: `GET /api/negocios`, `PATCH /api/negocios/:id/{estagio,arquivar}` |
 | Kanban — UI arrasta-e-solta | `src/KanbanBoard.tsx` (HTML5 drag-and-drop + polling 12s; `<select>` de fallback no mobile) |

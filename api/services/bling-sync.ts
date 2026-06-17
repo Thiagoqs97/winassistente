@@ -1,7 +1,14 @@
 import axios from 'axios';
 import { pool } from '../db/pool.js';
 import { logger } from '../lib/logger.js';
-import { iterateProdutos, getProdutoDetalhe, extrairImagemUrl, getSaldosEstoque } from './bling.js';
+import {
+  iterateProdutos,
+  getProdutoDetalhe,
+  extrairImagemUrl,
+  getSaldosEstoque,
+  parseSaldosResponse,
+  type SaldosPage,
+} from './bling.js';
 import { ensureProductBucket, uploadProductImage } from './storage.js';
 
 // Normalização p/ casamento: tira acento, minúsculo, colapsa não-alfanumérico.
@@ -340,4 +347,33 @@ export async function syncEstoqueBatch(budgetMs = 210000): Promise<EstoqueProgre
     [runStartIso],
   );
   return { processed, disponiveis, esgotados, semInfo, restantes: rem[0].c, done: rem[0].c === 0, ultimoErro };
+}
+
+export interface WebhookEstoqueResult {
+  produtoId: number | null; // id do produto no Bling extraído do payload
+  saldo: number | null; // saldo aplicado (virtual com fallback p/ físico)
+  matched: boolean; // achamos um produto nosso com esse bling_id e atualizamos
+}
+
+// Aplica o saldo de UM evento de webhook de estoque do Bling. O bloco `data` do
+// webhook tem o MESMO shape da linha do /estoques/saldos, então reusamos o parser
+// (e a regra saldoVirtual ?? saldoFisico) do sync em massa. Atualização absoluta
+// (grava o saldo informado) → naturalmente idempotente se o Bling reenviar.
+// Sem produto mapeado (bling_id desconhecido) ou sem saldo numérico: no-op, mas
+// devolvemos o que foi extraído pra log/telemetria. Não joga: o webhook precisa
+// responder 2xx mesmo quando o produto não está no nosso catálogo.
+export async function aplicarEstoqueWebhook(data: unknown): Promise<WebhookEstoqueResult> {
+  const parsed = parseSaldosResponse({ data: [data] } as SaldosPage);
+  if (parsed.length === 0) return { produtoId: null, saldo: null, matched: false };
+
+  const s = parsed[0];
+  const saldo = s.saldoVirtual ?? s.saldoFisico;
+  if (typeof saldo !== 'number') return { produtoId: s.produtoId, saldo: null, matched: false };
+
+  const { rowCount } = await pool.query(
+    `UPDATE products SET estoque_saldo = $1, estoque_sync_em = now()
+      WHERE bling_id = $2::bigint AND ativo = true`,
+    [saldo, s.produtoId],
+  );
+  return { produtoId: s.produtoId, saldo, matched: (rowCount ?? 0) > 0 };
 }
