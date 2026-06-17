@@ -286,14 +286,25 @@ async function initDB(): Promise<void> {
          ON clientes (lower(email)) WHERE senha_hash IS NOT NULL;`
     );
     // CPF/CNPJ é a chave de vínculo da conta (1 documento = 1 conta). UNIQUE sobre
-    // o documento NORMALIZADO (só dígitos) e apenas pra quem TEM conta — a base
-    // importada (senha_hash nulo) pode ter documentos repetidos/formatados e não
-    // entra no índice.
-    await client.query(
-      `CREATE UNIQUE INDEX IF NOT EXISTS uniq_clientes_doc_conta
-         ON clientes (regexp_replace(coalesce(cpf_cnpj, ''), '\\D', '', 'g'))
-         WHERE senha_hash IS NOT NULL;`
-    );
+    // o documento NORMALIZADO (só dígitos), apenas pra quem TEM conta E tem doc
+    // não-vazio — a base importada (senha_hash nulo) e contas legadas sem doc
+    // (janela em que o campo era opcional) ficam de fora do índice.
+    // Envolvido num DO/EXCEPTION: se já houver dados duplicados (de antes do doc
+    // virar obrigatório), o índice não é criado mas o boot NÃO quebra — a
+    // unicidade segue garantida no app (checagem docComConta no registrarCliente).
+    await client.query(`
+      DO $$
+      BEGIN
+        BEGIN
+          CREATE UNIQUE INDEX IF NOT EXISTS uniq_clientes_doc_conta
+            ON clientes (regexp_replace(coalesce(cpf_cnpj, ''), '\\D', '', 'g'))
+            WHERE senha_hash IS NOT NULL
+              AND regexp_replace(coalesce(cpf_cnpj, ''), '\\D', '', 'g') <> '';
+        EXCEPTION WHEN unique_violation THEN
+          RAISE NOTICE 'uniq_clientes_doc_conta nao criado (documento duplicado pre-existente): %', SQLERRM;
+        END;
+      END $$;
+    `);
 
     // Endereços de entrega do cliente (Meus endereços). Múltiplos por cliente;
     // um marcado como principal. As colunas de endereço em `clientes` continuam
