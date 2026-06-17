@@ -1,6 +1,6 @@
 import { pool } from '../db/pool.js';
 import { logger } from '../lib/logger.js';
-import { hashPassword, verifyPassword, emailValido, senhaValida } from '../lib/cliente-auth.js';
+import { hashPassword, verifyPassword, emailValido, senhaValida, cpfCnpjValido, soDigitosDoc } from '../lib/cliente-auth.js';
 import type { ClienteAuth } from '../middleware/cliente-auth.js';
 
 export class ContaError extends Error {
@@ -44,24 +44,27 @@ export interface RegistrarInput {
   cpf_cnpj?: string;
 }
 
-// Cadastra a conta do cliente. Estratégia de "assumir registro": se já existe um
-// `clientes` SEM conta (senha_hash nulo) com o mesmo telefone OU email, a conta é
-// ancorada nele — assim o histórico (pedidos anônimos anteriores + base do Bling)
-// fica vinculado. Senão, cria um registro novo.
+// Cadastra a conta do cliente. CPF/CNPJ é OBRIGATÓRIO e é a chave de vínculo:
+// se já existe um `clientes` na base SEM conta (senha_hash nulo) com esse mesmo
+// documento, a conta ASSUME aquele registro — e como os pedidos apontam pro
+// clientes.id, todo o histórico (catálogo + WhatsApp + painel) passa a aparecer
+// pro cliente. Um documento = uma conta: se o documento já tem conta, manda logar.
 export async function registrarCliente(input: RegistrarInput): Promise<{ id: string; cliente: ClienteAuth }> {
   const nome = (input.nome ?? '').trim();
   const email = (input.email ?? '').trim().toLowerCase();
   const senha = input.senha ?? '';
   const telefone = (input.telefone ?? '').trim();
-  const cpfCnpj = (input.cpf_cnpj ?? '').trim() || null;
+  const cpfCnpj = (input.cpf_cnpj ?? '').trim();
 
   if (nome.length < 2) throw new ContaError('Informe seu nome completo.');
   if (!emailValido(email)) throw new ContaError('Informe um e-mail válido.');
   if (!senhaValida(senha)) throw new ContaError('A senha precisa ter ao menos 8 caracteres.');
   if (soDigitos(telefone).length < 10) throw new ContaError('Informe um celular com DDD.');
+  if (!cpfCnpjValido(cpfCnpj)) throw new ContaError('Informe um CPF ou CNPJ válido.');
 
   const senhaHash = await hashPassword(senha);
-  const tel = soDigitos(telefone);
+  const doc = soDigitosDoc(cpfCnpj);
+  const tipoPessoa = doc.length === 14 ? 'J' : 'F';
 
   const client = await pool.connect();
   try {
@@ -69,37 +72,47 @@ export async function registrarCliente(input: RegistrarInput): Promise<{ id: str
 
     // Email já pertence a uma conta? (índice único parcial garante no banco, mas
     // checamos antes pra devolver mensagem amigável em vez de erro 23505 cru.)
-    const jaTem = await client.query(
+    const emailComConta = await client.query(
       `SELECT 1 FROM clientes WHERE lower(email) = $1 AND senha_hash IS NOT NULL LIMIT 1`,
       [email]
     );
-    if (jaTem.rows.length > 0) {
+    if (emailComConta.rows.length > 0) {
       throw new ContaError('Esse e-mail já tem conta. Faça login.', 409);
     }
 
-    // Procura um registro SEM conta pra assumir: telefone primeiro, depois email.
+    // Documento já vinculado a uma conta? → 1 documento = 1 conta.
+    const docComConta = await client.query(
+      `SELECT 1 FROM clientes
+        WHERE senha_hash IS NOT NULL
+          AND regexp_replace(coalesce(cpf_cnpj, ''), '\\D', '', 'g') = $1
+        LIMIT 1`,
+      [doc]
+    );
+    if (docComConta.rows.length > 0) {
+      throw new ContaError('Esse CPF/CNPJ já tem conta. Faça login.', 409);
+    }
+
+    // Cliente já na base (sem conta) com esse documento → assume o registro.
     const existente = await client.query(
       `SELECT id FROM clientes
         WHERE senha_hash IS NULL
-          AND (
-            regexp_replace(coalesce(celular, ''), '\\D', '', 'g') = $1
-            OR regexp_replace(coalesce(fone, ''), '\\D', '', 'g') = $1
-            OR lower(coalesce(email, '')) = $2
-          )
-        ORDER BY (lower(coalesce(email, '')) = $2) DESC, atualizado_em DESC NULLS LAST, criado_em DESC
+          AND regexp_replace(coalesce(cpf_cnpj, ''), '\\D', '', 'g') = $1
+        ORDER BY atualizado_em DESC NULLS LAST, criado_em DESC
         LIMIT 1`,
-      [tel, email]
+      [doc]
     );
 
     let clienteId: string;
+    let assumiu = false;
     if (existente.rows.length > 0) {
       clienteId = existente.rows[0].id;
+      assumiu = true;
       await client.query(
         `UPDATE clientes
             SET nome = $2,
                 email = $3,
                 celular = COALESCE(NULLIF(celular, ''), $4),
-                cpf_cnpj = COALESCE($5, cpf_cnpj),
+                cpf_cnpj = COALESCE(NULLIF(cpf_cnpj, ''), $5),
                 senha_hash = $6,
                 conta_criada_em = NOW(),
                 ativo = true,
@@ -113,13 +126,13 @@ export async function registrarCliente(input: RegistrarInput): Promise<{ id: str
         `INSERT INTO clientes (nome, email, celular, cpf_cnpj, senha_hash, conta_criada_em, situacao, ativo, tipo_pessoa)
          VALUES ($1, $2, $3, $4, $5, NOW(), 'Ativo', true, $6)
          RETURNING id`,
-        [nome, email, telefone, cpfCnpj, senhaHash, cpfCnpj && soDigitos(cpfCnpj).length > 11 ? 'J' : 'F']
+        [nome, email, telefone, cpfCnpj, senhaHash, tipoPessoa]
       );
       clienteId = novo.rows[0].id;
     }
 
     await client.query('COMMIT');
-    logger.info('conta cliente criada', { cliente_id: clienteId, assumiu: existente.rows.length > 0 });
+    logger.info('conta cliente criada', { cliente_id: clienteId, assumiu });
     return { id: clienteId, cliente: await perfilDoCliente(clienteId) };
   } catch (err) {
     await client.query('ROLLBACK');

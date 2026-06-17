@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import {
   emailValido,
   senhaValida,
+  cpfCnpjValido,
   signClienteToken,
   verifyClienteToken,
 } from '../api/lib/cliente-auth.js';
@@ -29,6 +30,17 @@ describe('cliente-auth — validadores puros', () => {
     expect(senhaValida('curta')).toBe(false);
     expect(senhaValida(undefined)).toBe(false);
   });
+
+  it('cpfCnpjValido confere dígito verificador (CPF e CNPJ), aceitando formatado', () => {
+    expect(cpfCnpjValido('11444777000161')).toBe(true);       // CNPJ válido
+    expect(cpfCnpjValido('11.444.777/0001-61')).toBe(true);   // CNPJ formatado
+    expect(cpfCnpjValido('52998224725')).toBe(true);          // CPF válido
+    expect(cpfCnpjValido('529.982.247-25')).toBe(true);       // CPF formatado
+    expect(cpfCnpjValido('11444777000160')).toBe(false);      // DV errado
+    expect(cpfCnpjValido('11111111111111')).toBe(false);      // todos iguais
+    expect(cpfCnpjValido('123')).toBe(false);                 // tamanho errado
+    expect(cpfCnpjValido(undefined)).toBe(false);
+  });
 });
 
 describe('cliente-auth — isolamento de token cliente x painel', () => {
@@ -52,7 +64,7 @@ describe('cliente-auth — isolamento de token cliente x painel', () => {
 // A validação de registrarCliente/loginCliente roda ANTES de qualquer acesso ao
 // banco — os caminhos de rejeição são testáveis sem Postgres.
 describe('registrarCliente — validação (sem banco)', () => {
-  const base = { nome: 'Thiago Queiroz', email: 'thiago@win.com', senha: 'segredo123', telefone: '86988887777' };
+  const base = { nome: 'Thiago Queiroz', email: 'thiago@win.com', senha: 'segredo123', telefone: '86988887777', cpf_cnpj: '11444777000161' };
 
   it('rejeita nome curto', async () => {
     await expect(registrarCliente({ ...base, nome: 'T' })).rejects.toBeInstanceOf(ContaError);
@@ -65,6 +77,12 @@ describe('registrarCliente — validação (sem banco)', () => {
   });
   it('rejeita telefone sem DDD', async () => {
     await expect(registrarCliente({ ...base, telefone: '99999' })).rejects.toBeInstanceOf(ContaError);
+  });
+  it('rejeita sem CPF/CNPJ (campo obrigatório)', async () => {
+    await expect(registrarCliente({ ...base, cpf_cnpj: undefined })).rejects.toBeInstanceOf(ContaError);
+  });
+  it('rejeita CPF/CNPJ inválido', async () => {
+    await expect(registrarCliente({ ...base, cpf_cnpj: '12345678000100' })).rejects.toBeInstanceOf(ContaError);
   });
 });
 

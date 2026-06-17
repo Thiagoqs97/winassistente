@@ -285,6 +285,15 @@ async function initDB(): Promise<void> {
       `CREATE UNIQUE INDEX IF NOT EXISTS uniq_clientes_email_conta
          ON clientes (lower(email)) WHERE senha_hash IS NOT NULL;`
     );
+    // CPF/CNPJ é a chave de vínculo da conta (1 documento = 1 conta). UNIQUE sobre
+    // o documento NORMALIZADO (só dígitos) e apenas pra quem TEM conta — a base
+    // importada (senha_hash nulo) pode ter documentos repetidos/formatados e não
+    // entra no índice.
+    await client.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS uniq_clientes_doc_conta
+         ON clientes (regexp_replace(coalesce(cpf_cnpj, ''), '\\D', '', 'g'))
+         WHERE senha_hash IS NOT NULL;`
+    );
 
     // Endereços de entrega do cliente (Meus endereços). Múltiplos por cliente;
     // um marcado como principal. As colunas de endereço em `clientes` continuam

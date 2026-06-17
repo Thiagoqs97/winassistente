@@ -44,12 +44,22 @@ export default function Entrar() {
   const submeter = async (e: React.FormEvent) => {
     e.preventDefault();
     setErro(null);
+
+    // Checagem leve no cliente (o backend valida de verdade, incl. dígito do CPF/CNPJ).
+    if (modo === 'criar') {
+      const doc = cpfCnpj.replace(/\D/g, '');
+      if (doc.length !== 11 && doc.length !== 14) {
+        setErro('Informe um CPF (11 dígitos) ou CNPJ (14 dígitos).');
+        return;
+      }
+    }
+
     try {
       setEnviando(true);
       if (modo === 'entrar') {
         await login(email, senha);
       } else {
-        await registrar({ nome, email, senha, telefone, cpf_cnpj: cpfCnpj || undefined });
+        await registrar({ nome, email, senha, telefone, cpf_cnpj: cpfCnpj });
       }
       navegar(destinoPosLogin());
     } catch (err: any) {
@@ -168,7 +178,8 @@ export default function Entrar() {
                     <input
                       value={cpfCnpj}
                       onChange={(e) => setCpfCnpj(e.target.value)}
-                      placeholder="CPF ou CNPJ (opcional)"
+                      placeholder="CPF ou CNPJ"
+                      inputMode="numeric"
                       className={inputBase}
                     />
                   </div>
