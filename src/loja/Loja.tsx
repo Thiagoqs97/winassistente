@@ -67,6 +67,13 @@ const COMO_FUNCIONA = [
   { n: '03', t: 'Confirmamos no zap', d: 'Nossa equipe valida e fecha a entrega com você.' },
 ];
 
+// Banner do hero: arte FECHADA da WIN (título, logo, produtos e selos já no
+// próprio arquivo). É exibida inteira, sem corte, sem texto HTML por cima.
+// Trocar a arte = substituir o arquivo, ou apontar VITE_HERO_BANNER_URL pra
+// outra URL (ex.: Supabase Storage). Sem ela, cai no hero CSS (aurora).
+const HERO_BANNER =
+  ((import.meta as any).env?.VITE_HERO_BANNER_URL as string | undefined)?.trim() || '/herowin.webp';
+
 // --- Ícones monoline (stroke consistente, currentColor). Sem emoji. ---
 
 type IconProps = { className?: string };
@@ -150,6 +157,9 @@ export default function Loja() {
 
   const [categorias, setCategorias] = useState<Categoria[]>([]);
   const [marcas, setMarcas] = useState<Marca[]>([]);
+
+  // Se a imagem do banner falhar (URL errada/arquivo ausente), cai no hero CSS.
+  const [bannerOk, setBannerOk] = useState(true);
 
   // Variação selecionada por card (grupoChave -> id do SKU).
   const [selecionada, setSelecionada] = useState<Record<string, number>>({});
@@ -368,10 +378,33 @@ export default function Loja() {
         </div>
       </header>
 
-      {/* HERO editorial 100% desenhado (sem foto): aurora dourada + grade técnica + grão */}
+      {/* HERO: arte fechada da WIN (herowin) quando existe; senão, hero CSS de fallback. */}
       <section className="hero-aurora grain relative overflow-hidden text-white isolate">
-        <div className="tech-grid absolute inset-0" aria-hidden />
         <div className="absolute left-0 top-0 h-full w-1 sm:w-1.5 bg-gradient-to-b from-gold-300 via-gold-500 to-transparent animate-grow" />
+
+        {HERO_BANNER && bannerOk ? (
+          /* Banner inteiro, sem corte. Clicável pra ir aos produtos. O alt carrega
+             o texto da arte (acessibilidade + SEO, já que está dentro da imagem). */
+          <div className="relative z-10 max-w-6xl mx-auto px-3 sm:px-4 py-5 sm:py-7">
+            <button
+              type="button"
+              onClick={() => irParaProdutos()}
+              aria-label="Ver produtos"
+              className="block w-full overflow-hidden rounded-xl sm:rounded-2xl ring-1 ring-white/10 shadow-2xl shadow-black/40 transition-transform duration-300 hover:scale-[1.005] animate-rise"
+            >
+              <img
+                src={HERO_BANNER}
+                alt="WIN Distribuidora — do whey ao pré-treino, no melhor preço"
+                fetchPriority="high"
+                decoding="async"
+                onError={() => setBannerOk(false)}
+                className="w-full h-auto block"
+              />
+            </button>
+          </div>
+        ) : (
+        <>
+        <div className="tech-grid absolute inset-0" aria-hidden />
 
         <div className="relative z-10 max-w-6xl mx-auto px-4 py-16 sm:py-24 lg:py-28 lg:grid lg:grid-cols-[1.45fr_0.85fr] lg:items-center lg:gap-14">
           {/* Coluna principal */}
@@ -450,6 +483,8 @@ export default function Loja() {
             </div>
           </div>
         </div>
+        </>
+        )}
       </section>
 
       {/* Faixa de marcas reais */}
