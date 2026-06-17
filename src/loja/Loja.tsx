@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch, ApiError } from '../lib/api';
+import { navegar } from './nav';
+import { useConta } from './conta/ContaContext';
+import {
+  brl, BTN_OURO, Wordmark,
+  IconSearch, IconBag, IconPlus, IconMinus, IconArrow, IconCheck, IconBox, IconWhats, IconUser, IconSpinner,
+} from './ui';
 
 interface Variacao {
   id: number;
@@ -43,15 +49,24 @@ interface ResultadoPedido {
   clienteNome: string;
 }
 
-const brl = (n: number) =>
-  n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+interface EnderecoResumo {
+  id: string;
+  apelido: string | null;
+  logradouro: string | null;
+  numero: string | null;
+  bairro: string | null;
+  cidade: string | null;
+  uf: string | null;
+  principal: boolean;
+}
+
+function resumoEndereco(e: EnderecoResumo): string {
+  const rua = [e.logradouro, e.numero].filter(Boolean).join(', ');
+  const loc = [e.bairro, [e.cidade, e.uf].filter(Boolean).join('/')].filter(Boolean).join(' - ');
+  return [rua, loc].filter(Boolean).join(' · ') || 'Endereço';
+}
 
 const LIMITE = 24;
-
-// Botão de ação principal (dourado da logo WIN). Usado com parcimônia: hero e
-// carrinho — não em cada card, pra não virar "grade de botões dourados".
-const BTN_OURO =
-  'bg-gradient-to-b from-gold-300 to-gold-500 hover:from-gold-200 hover:to-gold-600 text-navy-900 shadow-[0_8px_24px_-10px_rgba(207,156,44,0.7)]';
 
 // Rótulo do seletor / contador conforme o tipo de variação.
 const rotuloVariacao = (tipo: string | null) => (tipo === 'cor_tamanho' ? 'Opção' : 'Sabor');
@@ -74,78 +89,11 @@ const COMO_FUNCIONA = [
 const HERO_BANNER =
   ((import.meta as any).env?.VITE_HERO_BANNER_URL as string | undefined)?.trim() || '/herowin.webp';
 
-// --- Ícones monoline (stroke consistente, currentColor). Sem emoji. ---
-
-type IconProps = { className?: string };
-
-function IconSearch({ className = '' }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" />
-    </svg>
-  );
-}
-function IconBag({ className = '' }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M6 7h12l-1 13H7L6 7Z" /><path d="M9 7V6a3 3 0 0 1 6 0v1" />
-    </svg>
-  );
-}
-function IconPlus({ className = '' }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
-function IconMinus({ className = '' }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-      <path d="M5 12h14" />
-    </svg>
-  );
-}
-function IconArrow({ className = '' }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M5 12h14M13 6l6 6-6 6" />
-    </svg>
-  );
-}
-function IconCheck({ className = '' }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="m5 13 4 4L19 7" />
-    </svg>
-  );
-}
-function IconBox({ className = '' }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M21 8 12 3 3 8l9 5 9-5Z" /><path d="M3 8v8l9 5 9-5V8" /><path d="m3 8 9 5 9-5" /><path d="M12 13v8" />
-    </svg>
-  );
-}
-function IconWhats({ className = '' }: IconProps) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-      <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38a9.9 9.9 0 0 0 4.79 1.22h.01c5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.82 9.82 0 0 0 12.04 2Zm0 1.8c2.17 0 4.2.84 5.74 2.38a8.07 8.07 0 0 1 2.38 5.73c0 4.47-3.64 8.11-8.12 8.11a8.1 8.1 0 0 1-4.13-1.13l-.3-.18-3.12.82.83-3.04-.2-.31a8.05 8.05 0 0 1-1.24-4.3c0-4.47 3.64-8.11 8.12-8.11Zm-2.6 4.36c-.13 0-.34.05-.52.24-.18.2-.69.68-.69 1.65 0 .97.71 1.91.81 2.04.1.13 1.39 2.21 3.43 3.01 1.7.67 2.05.54 2.42.5.37-.03 1.2-.49 1.37-.96.17-.47.17-.87.12-.96-.05-.08-.18-.13-.38-.23-.2-.1-1.2-.59-1.39-.66-.18-.07-.32-.1-.45.1-.13.2-.51.66-.63.79-.12.13-.23.15-.43.05-.2-.1-.85-.31-1.62-1-.6-.53-1-1.19-1.12-1.39-.12-.2-.01-.31.09-.41.09-.09.2-.23.3-.35.1-.12.13-.2.2-.34.07-.13.03-.25-.02-.35-.05-.1-.44-1.08-.62-1.48-.16-.38-.33-.33-.45-.34l-.38-.01Z" />
-    </svg>
-  );
-}
-
-// Marca do produto em maiúsculas condensadas — usada na logo do header/footer.
-function Wordmark({ size = 'base' }: { size?: 'base' | 'lg' }) {
-  return (
-    <span className="leading-none">
-      <span className={`block font-display font-bold text-white tracking-wide ${size === 'lg' ? 'text-xl' : 'text-lg'}`}>WIN</span>
-      <span className={`block font-display uppercase tracking-[0.34em] text-gold-400 ${size === 'lg' ? 'text-[10px]' : 'text-[9px]'}`}>Distribuidora</span>
-    </span>
-  );
-}
+const CARRINHO_KEY = 'win_carrinho';
+const CHECKOUT_PENDENTE_KEY = 'win_checkout_pendente';
 
 export default function Loja() {
+  const { cliente, carregando: contaCarregando } = useConta();
   const [grupos, setGrupos] = useState<Grupo[]>([]);
   const [q, setQ] = useState('');
   const [categoria, setCategoria] = useState('');
@@ -164,17 +112,58 @@ export default function Loja() {
   // Variação selecionada por card (grupoChave -> id do SKU).
   const [selecionada, setSelecionada] = useState<Record<string, number>>({});
 
-  const [carrinho, setCarrinho] = useState<Record<number, ItemCarrinho>>({});
+  // Carrinho persistido em localStorage: sobrevive a refresh e ao desvio pro
+  // login (checkout exige conta). Lazy-init lê o que estava salvo.
+  const [carrinho, setCarrinho] = useState<Record<number, ItemCarrinho>>(() => {
+    try {
+      const raw = localStorage.getItem(CARRINHO_KEY);
+      return raw ? (JSON.parse(raw) as Record<number, ItemCarrinho>) : {};
+    } catch {
+      return {};
+    }
+  });
   const [carrinhoAberto, setCarrinhoAberto] = useState(false);
   const [vista, setVista] = useState<'catalogo' | 'checkout' | 'sucesso'>('catalogo');
 
-  const [nome, setNome] = useState('');
-  const [telefone, setTelefone] = useState('');
+  const [enderecos, setEnderecos] = useState<EnderecoResumo[]>([]);
+  const [enderecoId, setEnderecoId] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [erroCheckout, setErroCheckout] = useState<string | null>(null);
   const [pedido, setPedido] = useState<ResultadoPedido | null>(null);
 
   const produtosRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CARRINHO_KEY, JSON.stringify(carrinho));
+    } catch {
+      /* quota/modo privado: carrinho fica só em memória */
+    }
+  }, [carrinho]);
+
+  // Endereços do cliente logado (pro seletor do checkout). Pré-seleciona o principal.
+  useEffect(() => {
+    if (!cliente) {
+      setEnderecos([]);
+      return;
+    }
+    apiFetch<{ enderecos: EnderecoResumo[] }>('/api/conta/enderecos')
+      .then((r) => {
+        setEnderecos(r.enderecos);
+        const principal = r.enderecos.find((e) => e.principal) ?? r.enderecos[0];
+        if (principal) setEnderecoId((cur) => cur || principal.id);
+      })
+      .catch(() => {});
+  }, [cliente]);
+
+  // Voltou do login pra finalizar (flag setada no gate): reabre o carrinho no checkout.
+  useEffect(() => {
+    if (cliente && sessionStorage.getItem(CHECKOUT_PENDENTE_KEY)) {
+      sessionStorage.removeItem(CHECKOUT_PENDENTE_KEY);
+      setCarrinhoAberto(true);
+      setVista('checkout');
+    }
+  }, [cliente]);
 
   const carregar = useCallback(async (busca: string, cat: string, mar: string, pag: number) => {
     setCarregando(true);
@@ -257,18 +246,36 @@ export default function Loja() {
     [itensCarrinho]
   );
 
+  // Desvia pro login guardando a intenção de finalizar (sessionStorage). Ao
+  // voltar logado, o efeito de CHECKOUT_PENDENTE reabre o carrinho no checkout.
+  const irParaLogin = () => {
+    sessionStorage.setItem(CHECKOUT_PENDENTE_KEY, '1');
+    navegar('/loja/entrar?next=/loja');
+  };
+
+  // "Finalizar pedido": checkout exige conta. Logado → tela de confirmação;
+  // senão → login (com o carrinho preservado no localStorage).
+  const finalizar = () => {
+    if (!cliente) {
+      irParaLogin();
+      return;
+    }
+    setVista('checkout');
+  };
+
   const enviarPedido = async () => {
     setErroCheckout(null);
-    if (nome.trim().length < 2) return setErroCheckout('Informe seu nome.');
-    if (telefone.replace(/\D/g, '').length < 10) return setErroCheckout('Informe um telefone com DDD.');
+    if (!cliente) {
+      irParaLogin();
+      return;
+    }
     setEnviando(true);
     try {
       const out = await apiFetch<ResultadoPedido>('/api/loja/pedido', {
         method: 'POST',
         body: JSON.stringify({
-          nome,
-          telefone,
           itens: itensCarrinho.map((i) => ({ produtoId: i.id, qtd: i.qtd })),
+          enderecoId: enderecoId || undefined,
         }),
       });
       setPedido(out);
@@ -284,8 +291,6 @@ export default function Loja() {
 
   const novoPedido = () => {
     setPedido(null);
-    setNome('');
-    setTelefone('');
     setVista('catalogo');
     setQ('');
     setCategoria('');
@@ -363,18 +368,41 @@ export default function Loja() {
               className="w-full rounded-xl border border-white/10 pl-10 pr-4 py-2.5 text-sm text-slate-700 bg-white/95 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-gold-400 focus:bg-white transition"
             />
           </form>
-          <button
-            onClick={() => setCarrinhoAberto(true)}
-            className="order-2 sm:order-3 relative rounded-xl bg-white/10 hover:bg-white/15 text-white border border-white/15 px-3.5 py-2.5 text-sm font-semibold transition shrink-0 flex items-center gap-2"
-          >
-            <IconBag className="w-5 h-5" />
-            <span className="hidden sm:inline">Carrinho</span>
-            {totalItens > 0 && (
-              <span className="absolute -top-2 -right-2 bg-gold-400 text-navy-900 text-xs rounded-full min-w-5 h-5 px-1 flex items-center justify-center font-bold ring-2 ring-navy-800">
-                {totalItens}
-              </span>
+          <div className="order-2 sm:order-3 flex items-center gap-2 shrink-0">
+            {/* Conta: logado vira atalho pro painel; deslogado, vai pro login. */}
+            {!contaCarregando && (
+              cliente ? (
+                <button
+                  onClick={() => navegar('/loja/conta')}
+                  className="rounded-xl bg-white/10 hover:bg-white/15 text-white border border-white/15 px-3.5 py-2.5 text-sm font-semibold transition flex items-center gap-2 max-w-[42vw] sm:max-w-none"
+                  title="Minha conta"
+                >
+                  <IconUser className="w-5 h-5 text-gold-400 shrink-0" />
+                  <span className="hidden sm:inline truncate">Olá, {cliente.nome.split(' ')[0]}</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => navegar('/loja/entrar')}
+                  className="rounded-xl bg-white/10 hover:bg-white/15 text-white border border-white/15 px-3.5 py-2.5 text-sm font-semibold transition flex items-center gap-2"
+                >
+                  <IconUser className="w-5 h-5" />
+                  <span className="hidden sm:inline">Entrar</span>
+                </button>
+              )
             )}
-          </button>
+            <button
+              onClick={() => setCarrinhoAberto(true)}
+              className="relative rounded-xl bg-white/10 hover:bg-white/15 text-white border border-white/15 px-3.5 py-2.5 text-sm font-semibold transition flex items-center gap-2"
+            >
+              <IconBag className="w-5 h-5" />
+              <span className="hidden sm:inline">Carrinho</span>
+              {totalItens > 0 && (
+                <span className="absolute -top-2 -right-2 bg-gold-400 text-navy-900 text-xs rounded-full min-w-5 h-5 px-1 flex items-center justify-center font-bold ring-2 ring-navy-800">
+                  {totalItens}
+                </span>
+              )}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -776,25 +804,37 @@ export default function Loja() {
               </div>
             ) : vista === 'checkout' ? (
               <div className="flex-1 overflow-y-auto p-5 space-y-4">
-                <label className="block">
-                  <span className="text-sm font-semibold text-ink">Nome</span>
-                  <input
-                    value={nome}
-                    onChange={(e) => setNome(e.target.value)}
-                    className="mt-1.5 w-full rounded-xl border border-slate-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-gold-400"
-                    placeholder="Seu nome"
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-sm font-semibold text-ink">WhatsApp / Telefone</span>
-                  <input
-                    value={telefone}
-                    onChange={(e) => setTelefone(e.target.value)}
-                    inputMode="tel"
-                    className="mt-1.5 w-full rounded-xl border border-slate-300 px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-gold-400"
-                    placeholder="(86) 99999-9999"
-                  />
-                </label>
+                {/* Identificação: o checkout exige conta, então o cliente vem do login. */}
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="font-display uppercase tracking-wide text-[11px] text-gold-600 font-semibold">Finalizando como</p>
+                  <p className="text-ink font-semibold mt-0.5">{cliente?.nome}</p>
+                  {(cliente?.celular || cliente?.email) && (
+                    <p className="text-slate-500 text-sm">{cliente?.celular || cliente?.email}</p>
+                  )}
+                </div>
+
+                <div>
+                  <span className="text-sm font-semibold text-ink">Endereço de entrega</span>
+                  {enderecos.length > 0 ? (
+                    <select
+                      value={enderecoId}
+                      onChange={(e) => setEnderecoId(e.target.value)}
+                      className="mt-1.5 w-full rounded-xl border border-slate-300 px-4 py-2.5 text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-gold-400"
+                    >
+                      {enderecos.map((e) => (
+                        <option key={e.id} value={e.id}>
+                          {resumoEndereco(e)}{e.principal ? ' (principal)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <p className="mt-1.5 text-sm text-slate-500">
+                      Sem endereço salvo — combinamos a entrega na confirmação.{' '}
+                      <button type="button" onClick={() => navegar('/loja/conta')} className="font-semibold text-navy-700 hover:text-gold-600 underline-offset-2 hover:underline">Adicionar endereço</button>
+                    </p>
+                  )}
+                </div>
+
                 {erroCheckout && <div className="bg-red-50 text-red-700 rounded-xl p-3 text-sm border border-red-100">{erroCheckout}</div>}
                 <div className="text-sm text-slate-500">
                   {totalItens} item(ns) · <span className="font-bold text-ink">{brl(totalCarrinho)}</span>
@@ -844,10 +884,11 @@ export default function Loja() {
                   </button>
                 ) : (
                   <button
-                    onClick={() => setVista('checkout')}
-                    className={`w-full ${BTN_OURO} font-bold rounded-xl py-3.5 transition-all active:scale-[0.99]`}
+                    onClick={finalizar}
+                    className={`w-full ${BTN_OURO} font-bold rounded-xl py-3.5 transition-all active:scale-[0.99] flex items-center justify-center gap-2`}
                   >
-                    Finalizar pedido
+                    {contaCarregando && <IconSpinner className="w-5 h-5" />}
+                    {cliente ? 'Finalizar pedido' : 'Entrar para finalizar'}
                   </button>
                 )}
               </div>

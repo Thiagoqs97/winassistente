@@ -20,6 +20,7 @@ import { dashboardRouter } from './routes/dashboard.js';
 import { webhookRouter } from './routes/webhook.js';
 import { blingRouter } from './routes/bling.js';
 import { lojaRouter } from './routes/loja.js';
+import { contaRouter } from './routes/conta.js';
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
@@ -64,6 +65,11 @@ app.use('/api', blingRouter);
 // dos routers do painel pelo mesmo motivo do webhook/bling — os guards de auth
 // deles vazariam pra cá e devolveriam 401 na vitrine pública.
 app.use('/api', lojaRouter);
+
+// Conta do cliente final (catálogo): login/registro abertos + rotas com auth de
+// cliente (cookie win_cliente). Guards são por-rota, então não vazam pro painel.
+// Montado na área pública pelo mesmo motivo do /loja.
+app.use('/api', contaRouter);
 
 // Rotas públicas (login) e rotas com autenticação própria via cookie/JWT.
 // O middleware de auth é aplicado dentro de cada router que precisa.

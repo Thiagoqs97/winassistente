@@ -271,6 +271,48 @@ async function initDB(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_clientes_externo_id ON clientes(externo_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_clientes_ativo_nome ON clientes(ativo, lower(nome));`);
 
+    // --- Conta do cliente no catálogo online ---
+    // A conta do cliente final É um registro de `clientes`: quando o cliente se
+    // cadastra na vitrine, gravamos a senha (hash) e a data de criação da conta
+    // no próprio registro. Clientes importados do Bling/Tiny ficam sem senha_hash
+    // (não têm conta) — viram conta só quando o dono assume o registro pelo email.
+    await client.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS senha_hash TEXT;`);
+    await client.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS conta_criada_em TIMESTAMP;`);
+    // Email é a chave de login. UNIQUE apenas sobre quem TEM conta (senha_hash não
+    // nulo) — assim a base importada, que pode ter emails repetidos/vazios, não
+    // conflita. lower(email) pra login case-insensitive.
+    await client.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS uniq_clientes_email_conta
+         ON clientes (lower(email)) WHERE senha_hash IS NOT NULL;`
+    );
+
+    // Endereços de entrega do cliente (Meus endereços). Múltiplos por cliente;
+    // um marcado como principal. As colunas de endereço em `clientes` continuam
+    // existindo (sync do Bling), mas o painel do cliente opera por aqui.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cliente_enderecos (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        cliente_id UUID NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
+        apelido TEXT,
+        cep TEXT,
+        logradouro TEXT,
+        numero TEXT,
+        complemento TEXT,
+        bairro TEXT,
+        cidade TEXT,
+        uf TEXT,
+        principal BOOLEAN DEFAULT false,
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em TIMESTAMP
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cliente_enderecos_cliente ON cliente_enderecos(cliente_id);`);
+    // Garante no máximo 1 endereço principal por cliente.
+    await client.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS uniq_cliente_endereco_principal
+         ON cliente_enderecos (cliente_id) WHERE principal = true;`
+    );
+
     await client.query(`ALTER TABLE orcamentos ADD COLUMN IF NOT EXISTS cliente_id UUID REFERENCES clientes(id) ON DELETE SET NULL;`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orcamentos_cliente_id ON orcamentos(cliente_id);`);
 

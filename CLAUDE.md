@@ -68,6 +68,11 @@ Variáveis em `.env` (modelo em `.env.example`):
 | Kanban (funil de negócios) — lógica de estágio | `api/services/negocios.ts` (upsert por sessão, avançar estágio forward-only, vincular ORC, sync status) |
 | Kanban — REST (lista/mover/arquivar) | `api/routes/negocios.ts`: `GET /api/negocios`, `PATCH /api/negocios/:id/{estagio,arquivar}` |
 | Kanban — UI arrasta-e-solta | `src/KanbanBoard.tsx` (HTML5 drag-and-drop + polling 12s; `<select>` de fallback no mobile) |
+| Catálogo público `/loja` — vitrine/pedido (backend) | `api/services/loja.ts` + `api/routes/loja.ts` (GET produtos/categorias/marcas PÚBLICOS; `POST /loja/pedido` exige conta de cliente via `requireCliente`) |
+| Catálogo público `/loja` — UI (vitrine + carrinho + checkout) | `src/loja/Loja.tsx`; UI compartilhada (ícones/`brl`/`BTN_OURO`/`Wordmark`) em `src/loja/ui.tsx`; carrinho persistido em localStorage |
+| Conta do cliente final — auth (e-mail+senha, cookie `win_cliente`, claim `typ:'cliente'`) | `api/lib/cliente-auth.ts` + `api/middleware/cliente-auth.ts` (`requireCliente`) |
+| Conta do cliente final — service + REST | `api/services/conta.ts` + `api/routes/conta.ts` (`registrar`/`login`/`logout`/`me`/`perfil`/`pedidos`/`enderecos` CRUD), montado na área PÚBLICA do `server.ts` |
+| Conta do cliente final — UI (login/cadastro + painel) | `src/loja/conta/` (`ContaContext`, `Entrar`, `MinhaConta`); roteamento client-side em `src/loja/nav.ts` + `src/loja/LojaApp.tsx` (`/loja`, `/loja/entrar`, `/loja/conta`) |
 | Helper de período (de/ate, default mês atual) | `api/lib/period.ts` |
 | OpenAI client singleton | `api/lib/openai.ts` |
 | Wrapper de chat completion + tracking de custo em `ai_usage` | `api/lib/ai.ts` |
@@ -124,6 +129,10 @@ Variáveis em `.env` (modelo em `.env.example`):
 - **Rodapé do PDF fica acima de `page.height - margins.bottom`**, não em `page.height - 30`. Caso contrário, o `LineWrapper` do PDFKit cria página adicional ao escrever lá (mesmo com `lineBreak: false`). Ver `api/services/pdf.ts`.
 - **`negocios` é ancorado em `sessao_id` (UNIQUE), não no cliente nem no ORC**. Um cartão do Kanban = uma conversa/sessão. Nasce em `novo_contato` no 1º contato e avança SÓ pra frente automaticamente (`avancarEstagioAuto`); ir pra trás só por arraste manual ou conversa explícita. `expedicao` e `recebido` ambos correspondem a ORC `venda` — a diferença vive só em `negocios.estagio`. Por isso `syncEstagioPorStatusOrc` preserva `recebido` quando o status vira `venda`.
 - **Arrastar um cartão altera o status REAL do orçamento** (decisão de produto): `estagioParaStatusOrc` mapeia coluna→status e o `PATCH /negocios/:id/estagio` propaga pro ORC. Estágios pré-ORC (`novo_contato`/`em_andamento`) não têm ORC, então não propagam nada.
+- **A conta do cliente final É um registro de `clientes`** (não há tabela `cliente_users` separada): o cadastro grava `senha_hash` + `conta_criada_em` no próprio registro. Quem se cadastra "assume" um `clientes` pré-existente sem conta (match por telefone, depois e-mail) pra herdar o histórico — senão cria um novo. `clientes` importados do Bling/Tiny ficam com `senha_hash NULL` e não são logáveis até alguém assumir. Índice único de e-mail é **parcial** (`WHERE senha_hash IS NOT NULL`) pra não conflitar com a base importada (e-mails repetidos/vazios).
+- **Auth do cliente é SEPARADA da do painel**: cookie `win_cliente` (não `win_auth`) e JWT com claim `typ:'cliente'`. `verifyClienteToken` rejeita tokens sem esse claim, então um token de admin não vira sessão de cliente nem vice-versa, mesmo compartilhando `JWT_SECRET`.
+- **Checkout do catálogo EXIGE conta** (decisão de produto): `POST /loja/pedido` passa por `requireCliente` e o pedido usa o `cliente.id` do cookie — não confia em nome/telefone do corpo. O carrinho fica em localStorage pra sobreviver ao desvio pro login.
+- **Falta o "esqueci a senha"**: depende de envio de e-mail, que o projeto ainda NÃO tem (sem SMTP/Resend). Login/cadastro funcionam; reset é dívida conhecida — plugar provedor de e-mail OU fazer reset via WhatsApp (Evolution já existe).
 
 ## Custos e modelos de IA
 

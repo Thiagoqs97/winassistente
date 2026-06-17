@@ -231,10 +231,6 @@ export async function listarMarcasLoja(): Promise<{ marca: string; total: number
   return rows.map((r) => ({ marca: r.marca, total: r.total }));
 }
 
-function soDigitos(s: string): string {
-  return (s || '').replace(/\D/g, '');
-}
-
 async function getVendedorCatalogoId(): Promise<string> {
   const { rows } = await pool.query(
     `INSERT INTO vendedores (numero_whatsapp, nome)
@@ -246,29 +242,43 @@ async function getVendedorCatalogoId(): Promise<string> {
   return rows[0].id;
 }
 
-// Acha o cliente pelo telefone (celular ou fone, comparando só dígitos) ou cria
-// um novo com o nome informado no checkout. Devolve id + nome canônico.
-async function resolverOuCriarCliente(nome: string, telefone: string): Promise<{ id: string; nome: string }> {
-  const tel = soDigitos(telefone);
-  if (tel.length >= 8) {
-    const { rows } = await pool.query(
-      `SELECT id, nome FROM clientes
-        WHERE regexp_replace(coalesce(celular, ''), '\\D', '', 'g') = $1
-           OR regexp_replace(coalesce(fone, ''), '\\D', '', 'g') = $1
-        ORDER BY atualizado_em DESC NULLS LAST, criado_em DESC
-        LIMIT 1`,
-      [tel]
-    );
-    if (rows.length > 0) return { id: rows[0].id, nome: rows[0].nome };
-  }
-
+// Carrega o cliente LOGADO (o checkout exige conta). Devolve id + nome + telefone
+// pra montar o orçamento e a notificação. Erro = conta sumiu entre login e pedido.
+async function carregarClienteCheckout(
+  clienteId: string
+): Promise<{ id: string; nome: string; telefone: string }> {
   const { rows } = await pool.query(
-    `INSERT INTO clientes (nome, celular, situacao, ativo)
-     VALUES ($1, $2, 'Ativo', true)
-     RETURNING id, nome`,
-    [nome.trim(), telefone.trim()]
+    `SELECT id, nome, coalesce(NULLIF(celular, ''), fone, '') AS telefone
+       FROM clientes WHERE id = $1 AND ativo = true AND senha_hash IS NOT NULL`,
+    [clienteId]
   );
-  return { id: rows[0].id, nome: rows[0].nome };
+  if (rows.length === 0) throw new PedidoInvalidoError('Conta não encontrada. Entre de novo.');
+  return { id: rows[0].id, nome: rows[0].nome, telefone: rows[0].telefone };
+}
+
+// Endereço de entrega: o escolhido (se pertencer ao cliente) ou o principal.
+// Devolve uma linha legível pra notificação da central (não persistimos no
+// orçamento por enquanto — não há coluna; a equipe recebe no WhatsApp).
+async function resolverEnderecoEntrega(clienteId: string, enderecoId?: string): Promise<string | null> {
+  const params: any[] = [clienteId];
+  let filtro = 'principal = true';
+  if (enderecoId) {
+    params.push(enderecoId);
+    filtro = `id = $2`;
+  }
+  const { rows } = await pool.query(
+    `SELECT logradouro, numero, complemento, bairro, cidade, uf, cep
+       FROM cliente_enderecos
+      WHERE cliente_id = $1 AND ${filtro}
+      ORDER BY principal DESC, criado_em ASC
+      LIMIT 1`,
+    params
+  );
+  if (rows.length === 0) return null;
+  const e = rows[0];
+  const linha1 = [e.logradouro, e.numero].filter(Boolean).join(', ');
+  const linha2 = [e.bairro, [e.cidade, e.uf].filter(Boolean).join('/')].filter(Boolean).join(' - ');
+  return [linha1, e.complemento, linha2, e.cep && `CEP ${e.cep}`].filter(Boolean).join(' · ') || null;
 }
 
 export interface ItemPedidoInput {
@@ -288,16 +298,15 @@ export class PedidoInvalidoError extends Error {}
 // Fluxo do pedido do catálogo. Reusa o numerador de ORC + o Kanban (negocios),
 // mas NÃO conversa pelo WhatsApp: o pedido entra no sistema e a equipe trabalha
 // pelo painel. Preço é SEMPRE resolvido no servidor (products.preco_venda) —
-// nunca confiamos no valor vindo do navegador.
+// nunca confiamos no valor vindo do navegador. O checkout exige conta: o cliente
+// vem do cookie de sessão (clienteId), não de nome/telefone digitados.
 export async function criarPedidoCatalogo(opts: {
-  nome: string;
-  telefone: string;
+  clienteId: string;
   itens: ItemPedidoInput[];
+  enderecoId?: string;
 }): Promise<ResultadoPedido> {
-  const nome = (opts.nome ?? '').trim();
-  const telefone = (opts.telefone ?? '').trim();
-  if (nome.length < 2) throw new PedidoInvalidoError('Informe um nome válido.');
-  if (soDigitos(telefone).length < 10) throw new PedidoInvalidoError('Informe um telefone válido com DDD.');
+  const clienteId = (opts.clienteId ?? '').trim();
+  if (!clienteId) throw new PedidoInvalidoError('Faça login para finalizar o pedido.');
 
   // Normaliza/valida itens e descarta duplicados (soma quantidades do mesmo produto).
   const qtdPorId = new Map<number, number>();
@@ -336,7 +345,8 @@ export async function criarPedidoCatalogo(opts: {
   const total = Number(itens.reduce((s, i) => s + i.subtotal, 0).toFixed(2));
 
   const vendedorId = await getVendedorCatalogoId();
-  const cliente = await resolverOuCriarCliente(nome, telefone);
+  const cliente = await carregarClienteCheckout(clienteId);
+  const enderecoEntrega = await resolverEnderecoEntrega(clienteId, opts.enderecoId);
 
   // Sessão sintética: o Kanban (negocios) é ancorado em sessao_id UNIQUE, então
   // cada pedido do catálogo é uma "conversa" própria de origem 'catalogo'.
@@ -372,7 +382,7 @@ export async function criarPedidoCatalogo(opts: {
 
   // Notificação opcional: só dispara se houver um número humano configurado em
   // system_config.whatsapp_central. Vazio (padrão) = nada sai no WhatsApp.
-  await notificarCentral(numero, cliente.nome, telefone, itens, total).catch((err) =>
+  await notificarCentral(numero, cliente.nome, cliente.telefone, enderecoEntrega, itens, total).catch((err) =>
     logger.error('falha ao notificar central do catalogo', { numero, err: err?.message })
   );
 
@@ -383,6 +393,7 @@ async function notificarCentral(
   numero: string,
   clienteNome: string,
   telefone: string,
+  enderecoEntrega: string | null,
   itens: ResultadoPedido['itens'],
   total: number
 ): Promise<void> {
@@ -396,7 +407,7 @@ async function notificarCentral(
     .join('\n');
   const texto = `🛒 *Novo pedido do catálogo* (${numero})
 Cliente: ${clienteNome}
-Fone: ${telefone}
+Fone: ${telefone}${enderecoEntrega ? `\nEntrega: ${enderecoEntrega}` : ''}
 —————————————————
 ${linhas}
 —————————————————

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { logger } from '../lib/logger.js';
+import { requireCliente, type ClienteRequest } from '../middleware/cliente-auth.js';
 import {
   listarProdutosLoja,
   listarCategoriasLoja,
@@ -63,15 +64,18 @@ lojaRouter.get('/loja/marcas', async (_req, res) => {
   }
 });
 
-lojaRouter.post('/loja/pedido', async (req, res) => {
+// Checkout EXIGE conta (requireCliente): o cliente vem do cookie de sessão, não
+// de nome/telefone digitados. requireCliente é guard POR ROTA — não vaza pras
+// rotas públicas (GET produtos/categorias/marcas) do mesmo router.
+lojaRouter.post('/loja/pedido', requireCliente, async (req: ClienteRequest, res) => {
   const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() || req.ip || 'desconhecido';
   if (rateLimited(ip)) {
     res.status(429).json({ error: 'Muitas tentativas. Aguarde um minuto e tente de novo.' });
     return;
   }
   try {
-    const { nome, telefone, itens } = req.body ?? {};
-    const resultado = await criarPedidoCatalogo({ nome, telefone, itens });
+    const { itens, enderecoId } = req.body ?? {};
+    const resultado = await criarPedidoCatalogo({ clienteId: req.cliente!.id, itens, enderecoId });
     res.status(201).json(resultado);
   } catch (err: any) {
     if (err instanceof PedidoInvalidoError) {
