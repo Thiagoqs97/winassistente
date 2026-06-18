@@ -87,7 +87,7 @@ const COMO_FUNCIONA = [
 // Trocar a arte = substituir o arquivo, ou apontar VITE_HERO_BANNER_URL pra
 // outra URL (ex.: Supabase Storage). Sem ela, cai no hero CSS (aurora).
 const HERO_BANNER =
-  ((import.meta as any).env?.VITE_HERO_BANNER_URL as string | undefined)?.trim() || '/herowin.webp';
+  ((import.meta as any).env?.VITE_HERO_BANNER_URL as string | undefined)?.trim() || '/herowin-v2.png';
 
 const CARRINHO_KEY = 'win_carrinho';
 const CHECKOUT_PENDENTE_KEY = 'win_checkout_pendente';
@@ -451,7 +451,7 @@ export default function Loja() {
             >
               <img
                 src={HERO_BANNER}
-                alt="WIN Distribuidora — do whey ao pré-treino, no melhor preço"
+                alt="WIN Distribuidora - suplementos para vender mais"
                 fetchPriority="high"
                 decoding="async"
                 onError={() => setBannerOk(false)}
