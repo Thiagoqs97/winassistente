@@ -8,6 +8,11 @@ import {
   criarPedidoCatalogo,
   PedidoInvalidoError,
 } from '../services/loja.js';
+import {
+  criarAvisoEstoque,
+  cancelarAvisoEstoque,
+  AvisoEstoqueError,
+} from '../services/avisos-estoque.js';
 
 // Router PÚBLICO do catálogo (sem auth). Tem que ser montado ANTES dos routers
 // do painel no server.ts — vários deles fazem router.use(requireAuth), que
@@ -84,5 +89,34 @@ lojaRouter.post('/loja/pedido', requireCliente, async (req: ClienteRequest, res)
     }
     logger.error('POST /loja/pedido falhou', { err: err?.message });
     res.status(500).json({ error: 'Não consegui registrar o pedido. Tente novamente.' });
+  }
+});
+
+lojaRouter.post('/loja/produtos/:id/avise-me', requireCliente, async (req: ClienteRequest, res) => {
+  try {
+    const produtoId = Number(req.params.id);
+    const out = await criarAvisoEstoque(req.cliente!.id, produtoId);
+    res.status(out.jaExistia ? 200 : 201).json({ ok: true, jaExistia: out.jaExistia });
+  } catch (err: any) {
+    if (err instanceof AvisoEstoqueError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    logger.error('POST /loja/produtos/:id/avise-me falhou', { err: err?.message });
+    res.status(500).json({ error: 'Não consegui criar o aviso. Tente novamente.' });
+  }
+});
+
+lojaRouter.delete('/loja/produtos/:id/avise-me', requireCliente, async (req: ClienteRequest, res) => {
+  try {
+    await cancelarAvisoEstoque(req.cliente!.id, Number(req.params.id));
+    res.json({ ok: true });
+  } catch (err: any) {
+    if (err instanceof AvisoEstoqueError) {
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
+    logger.error('DELETE /loja/produtos/:id/avise-me falhou', { err: err?.message });
+    res.status(500).json({ error: 'Não consegui cancelar o aviso. Tente novamente.' });
   }
 });

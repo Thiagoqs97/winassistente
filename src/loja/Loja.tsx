@@ -95,7 +95,7 @@ const CHECKOUT_PENDENTE_KEY = 'win_checkout_pendente';
 export default function Loja() {
   const { cliente, carregando: contaCarregando } = useConta();
   const [grupos, setGrupos] = useState<Grupo[]>([]);
-  const [q, setQ] = useState('');
+  const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get('q') ?? '');
   const [categoria, setCategoria] = useState('');
   const [marca, setMarca] = useState('');
   const [pagina, setPagina] = useState(1);
@@ -130,6 +130,8 @@ export default function Loja() {
   const [enviando, setEnviando] = useState(false);
   const [erroCheckout, setErroCheckout] = useState<string | null>(null);
   const [pedido, setPedido] = useState<ResultadoPedido | null>(null);
+  const [avisosIds, setAvisosIds] = useState<Set<number>>(new Set());
+  const [avisosLoading, setAvisosLoading] = useState<Record<number, boolean>>({});
 
   const produtosRef = useRef<HTMLDivElement>(null);
 
@@ -188,6 +190,16 @@ export default function Loja() {
     apiFetch<Categoria[]>('/api/loja/categorias').then(setCategorias).catch(() => {});
     apiFetch<Marca[]>('/api/loja/marcas').then(setMarcas).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!cliente) {
+      setAvisosIds(new Set());
+      return;
+    }
+    apiFetch<{ produtoIds: number[] }>('/api/conta/avisos?ids=1')
+      .then((r) => setAvisosIds(new Set(r.produtoIds)))
+      .catch(() => {});
+  }, [cliente]);
 
   // Busca/filtro com debounce: volta pra página 1 a cada mudança.
   useEffect(() => {
@@ -286,6 +298,23 @@ export default function Loja() {
       setErroCheckout(err instanceof ApiError ? err.message : 'Não consegui registrar o pedido. Tente de novo.');
     } finally {
       setEnviando(false);
+    }
+  };
+
+  const pedirAviso = async (produtoId: number) => {
+    if (!cliente) {
+      navegar('/loja/entrar?next=/loja');
+      return;
+    }
+    setErro(null);
+    setAvisosLoading((s) => ({ ...s, [produtoId]: true }));
+    try {
+      await apiFetch(`/api/loja/produtos/${produtoId}/avise-me`, { method: 'POST' });
+      setAvisosIds((s) => new Set([...s, produtoId]));
+    } catch (err: any) {
+      setErro(err instanceof ApiError ? err.message : 'Não consegui criar o aviso. Tente de novo.');
+    } finally {
+      setAvisosLoading((s) => ({ ...s, [produtoId]: false }));
     }
   };
 
@@ -620,6 +649,8 @@ export default function Loja() {
               const noCarrinho = carrinho[v.id]?.qtd ?? 0;
               const temVariacoes = g.totalVariacoes > 1;
               const indisponivel = !v.disponivel;
+              const avisoAtivo = avisosIds.has(v.id);
+              const avisoLoading = avisosLoading[v.id] === true;
               const itemBase = {
                 id: v.id, nomeBase: g.nomeBase, marca: g.marca, variacao: v.variacao, preco: v.preco, imagem: img,
               };
@@ -704,10 +735,16 @@ export default function Loja() {
                     <div className="mt-auto pt-3.5">
                       {indisponivel ? (
                         <button
-                          disabled
-                          className="w-full bg-slate-100 text-slate-400 text-sm font-semibold rounded-xl py-2.5 flex items-center justify-center gap-2 cursor-not-allowed"
+                          onClick={() => pedirAviso(v.id)}
+                          disabled={avisoAtivo || avisoLoading}
+                          className={`w-full text-sm font-semibold rounded-xl py-2.5 flex items-center justify-center gap-2 transition ${
+                            avisoAtivo
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-100 cursor-default'
+                              : 'bg-slate-900 hover:bg-navy-800 text-white active:scale-[0.98]'
+                          } disabled:opacity-80`}
                         >
-                          Sem estoque
+                          {avisoLoading && <IconSpinner className="w-4 h-4" />}
+                          {avisoAtivo ? 'Aviso ativado' : 'Avise-me'}
                         </button>
                       ) : noCarrinho === 0 ? (
                         <button

@@ -333,6 +333,28 @@ async function initDB(): Promise<void> {
          ON cliente_enderecos (cliente_id) WHERE principal = true;`
     );
 
+    // "Avise-me" do catalogo: cliente pede aviso por WhatsApp quando um SKU sem
+    // estoque voltar a ficar disponivel. O status processando evita envio duplicado
+    // quando dois eventos de estoque chegam ao mesmo tempo.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS avisos_estoque (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        cliente_id UUID NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
+        produto_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+        status TEXT NOT NULL DEFAULT 'pendente'
+          CHECK (status IN ('pendente','processando','enviado','cancelado')),
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        atualizado_em TIMESTAMP,
+        enviado_em TIMESTAMP
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_avisos_estoque_produto_status ON avisos_estoque(produto_id, status);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_avisos_estoque_cliente_status ON avisos_estoque(cliente_id, status, criado_em DESC);`);
+    await client.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS uniq_avisos_estoque_pendente
+         ON avisos_estoque (cliente_id, produto_id) WHERE status = 'pendente';`
+    );
+
     await client.query(`ALTER TABLE orcamentos ADD COLUMN IF NOT EXISTS cliente_id UUID REFERENCES clientes(id) ON DELETE SET NULL;`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_orcamentos_cliente_id ON orcamentos(cliente_id);`);
 

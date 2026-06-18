@@ -10,6 +10,7 @@ import {
   type SaldosPage,
 } from './bling.js';
 import { ensureProductBucket, uploadProductImage } from './storage.js';
+import { notificarAvisosProdutosDisponiveis } from './avisos-estoque.js';
 
 // Normalização p/ casamento: tira acento, minúsculo, colapsa não-alfanumérico.
 // Estrito de propósito (começamos só com match seguro; afrouxamos depois).
@@ -315,6 +316,7 @@ export async function syncEstoqueBatch(budgetMs = 210000): Promise<EstoqueProgre
     // 2) Grava o saldo dos que o Bling retornou com número.
     const ourIds: number[] = [];
     const saldoVals: number[] = [];
+    const idsRepostos: number[] = [];
     for (const r of rows) {
       const saldo = saldoPorBling.get(Number(r.bling_id));
       if (saldo === undefined) {
@@ -327,11 +329,30 @@ export async function syncEstoqueBatch(budgetMs = 210000): Promise<EstoqueProgre
       else esgotados++;
     }
     if (ourIds.length > 0) {
-      await pool.query(
-        `UPDATE products p SET estoque_saldo = v.saldo
-         FROM (SELECT unnest($1::int[]) AS oid, unnest($2::numeric[]) AS saldo) v
-         WHERE p.id = v.oid`,
+      const { rows: repostos } = await pool.query(
+        `WITH valores AS (
+           SELECT unnest($1::int[]) AS oid, unnest($2::numeric[]) AS saldo
+         ),
+         alvo AS (
+           SELECT p.id, p.estoque_saldo AS saldo_anterior, v.saldo
+             FROM products p
+             JOIN valores v ON v.oid = p.id
+         ),
+         atualizados AS (
+           UPDATE products p
+              SET estoque_saldo = alvo.saldo
+             FROM alvo
+            WHERE p.id = alvo.id
+            RETURNING p.id, alvo.saldo, alvo.saldo_anterior
+         )
+         SELECT id FROM atualizados WHERE saldo > 0 AND saldo_anterior IS NOT NULL AND saldo_anterior <= 0`,
         [ourIds, saldoVals],
+      );
+      idsRepostos.push(...repostos.map((r) => Number(r.id)));
+    }
+    if (idsRepostos.length > 0) {
+      await notificarAvisosProdutosDisponiveis(idsRepostos).catch((err) =>
+        logger.error('falha ao notificar avisos de estoque no sync', { err: err?.message })
       );
     }
 
@@ -370,10 +391,27 @@ export async function aplicarEstoqueWebhook(data: unknown): Promise<WebhookEstoq
   const saldo = s.saldoVirtual ?? s.saldoFisico;
   if (typeof saldo !== 'number') return { produtoId: s.produtoId, saldo: null, matched: false };
 
-  const { rowCount } = await pool.query(
-    `UPDATE products SET estoque_saldo = $1, estoque_sync_em = now()
-      WHERE bling_id = $2::bigint AND ativo = true`,
+  const { rows, rowCount } = await pool.query(
+    `WITH alvo AS (
+       SELECT id, estoque_saldo AS saldo_anterior
+         FROM products
+        WHERE bling_id = $2::bigint AND ativo = true
+        FOR UPDATE
+     )
+     UPDATE products p
+        SET estoque_saldo = $1, estoque_sync_em = now()
+       FROM alvo
+      WHERE p.id = alvo.id
+      RETURNING p.id, alvo.saldo_anterior`,
     [saldo, s.produtoId],
   );
+  const idsRepostos = rows
+    .filter((r) => saldo > 0 && r.saldo_anterior !== null && Number(r.saldo_anterior) <= 0)
+    .map((r) => Number(r.id));
+  if (idsRepostos.length > 0) {
+    await notificarAvisosProdutosDisponiveis(idsRepostos).catch((err) =>
+      logger.error('falha ao notificar avisos de estoque no webhook', { err: err?.message })
+    );
+  }
   return { produtoId: s.produtoId, saldo, matched: (rowCount ?? 0) > 0 };
 }

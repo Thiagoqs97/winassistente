@@ -5,10 +5,10 @@ import { useConta, type Cliente } from './ContaContext';
 import {
   brl, BTN_OURO, Wordmark,
   IconArrowLeft, IconReceipt, IconUser, IconPin, IconLogout,
-  IconPlus, IconTrash, IconCheck, IconSpinner,
+  IconPlus, IconTrash, IconCheck, IconSpinner, IconBox,
 } from '../ui';
 
-type Secao = 'pedidos' | 'dados' | 'enderecos';
+type Secao = 'pedidos' | 'avisos' | 'dados' | 'enderecos';
 
 interface ItemPedido { descricao: string; marca: string | null; qtd: number; preco_unit: number; subtotal: number }
 interface Pedido {
@@ -32,6 +32,16 @@ interface Endereco {
   principal: boolean;
 }
 
+interface AvisoEstoque {
+  id: string;
+  produtoId: number;
+  descricao: string;
+  marca: string | null;
+  imagemUrl: string | null;
+  preco: number | null;
+  criadoEm: string;
+}
+
 const STATUS_CLASSE: Record<Pedido['statusCodigo'], string> = {
   aguardando: 'bg-amber-50 text-amber-700 ring-amber-200',
   separacao: 'bg-blue-50 text-blue-700 ring-blue-200',
@@ -48,6 +58,7 @@ function dataBR(iso: string): string {
 
 const MENU: { id: Secao; label: string; Icon: (p: { className?: string }) => React.JSX.Element }[] = [
   { id: 'pedidos', label: 'Meus pedidos', Icon: IconReceipt },
+  { id: 'avisos', label: 'Meus avisos', Icon: IconBox },
   { id: 'dados', label: 'Meus dados', Icon: IconUser },
   { id: 'enderecos', label: 'Meus endereços', Icon: IconPin },
 ];
@@ -114,6 +125,7 @@ export default function MinhaConta() {
           {/* Conteúdo */}
           <section className="min-w-0">
             {secao === 'pedidos' && <Pedidos />}
+            {secao === 'avisos' && <AvisosEstoque />}
             {secao === 'dados' && <Dados />}
             {secao === 'enderecos' && <Enderecos />}
           </section>
@@ -176,6 +188,76 @@ function Pedidos() {
           </ul>
         </div>
       ))}
+    </div>
+  );
+}
+
+// --- Meus avisos ---
+
+function AvisosEstoque() {
+  const [avisos, setAvisos] = useState<AvisoEstoque[] | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+  const [cancelando, setCancelando] = useState<Record<number, boolean>>({});
+
+  const carregar = useCallback(() => {
+    setErro(null);
+    apiFetch<{ avisos: AvisoEstoque[] }>('/api/conta/avisos')
+      .then((r) => setAvisos(r.avisos))
+      .catch((e) => setErro(e instanceof ApiError ? e.message : 'Não consegui carregar seus avisos.'));
+  }, []);
+
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const cancelar = async (produtoId: number) => {
+    setCancelando((s) => ({ ...s, [produtoId]: true }));
+    try {
+      await apiFetch(`/api/loja/produtos/${produtoId}/avise-me`, { method: 'DELETE' });
+      setAvisos((lista) => (lista ?? []).filter((a) => a.produtoId !== produtoId));
+    } catch (e: any) {
+      setErro(e instanceof ApiError ? e.message : 'Não consegui cancelar o aviso.');
+    } finally {
+      setCancelando((s) => ({ ...s, [produtoId]: false }));
+    }
+  };
+
+  if (erro) return <Aviso tom="erro">{erro}</Aviso>;
+  if (!avisos) return <CarregandoCard />;
+  if (avisos.length === 0) {
+    return (
+      <Vazio Icon={IconBox} titulo="Nenhum aviso ativo" texto="Quando um produto estiver sem estoque, toque em Avise-me no catálogo.">
+        <button onClick={() => navegar('/loja')} className="bg-navy-700 hover:bg-navy-800 text-white font-semibold rounded-xl px-5 py-2.5 text-sm transition">
+          Ver catálogo
+        </button>
+      </Vazio>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <h2 className="font-display uppercase tracking-tight text-xl font-bold text-ink">Meus avisos</h2>
+      <div className="grid sm:grid-cols-2 gap-4">
+        {avisos.map((a) => (
+          <div key={a.id} className="bg-white rounded-2xl border border-slate-200 shadow-card p-4 flex gap-3">
+            <div className="w-16 h-16 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-center overflow-hidden shrink-0">
+              {a.imagemUrl ? <img src={a.imagemUrl} alt="" className="w-full h-full object-contain" /> : <IconBox className="w-7 h-7 text-slate-300" />}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-slate-800 line-clamp-2">{a.descricao}</p>
+              {a.marca && <p className="text-xs text-gold-600 font-semibold uppercase tracking-wide mt-0.5">{a.marca}</p>}
+              <p className="text-xs text-slate-400 mt-1">Criado em {dataBR(a.criadoEm)}</p>
+              {a.preco !== null && <p className="font-display font-bold text-ink mt-1">{brl(a.preco)}</p>}
+              <button
+                onClick={() => cancelar(a.produtoId)}
+                disabled={cancelando[a.produtoId]}
+                className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold text-red-600 hover:text-red-700 disabled:opacity-60"
+              >
+                {cancelando[a.produtoId] ? <IconSpinner className="w-4 h-4" /> : <IconTrash className="w-4 h-4" />}
+                Cancelar aviso
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

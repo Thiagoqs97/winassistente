@@ -13,6 +13,10 @@ import {
   removerEndereco,
   ContaError,
 } from '../services/conta.js';
+import {
+  listarAvisosEstoqueCliente,
+  listarProdutoIdsComAvisoPendente,
+} from '../services/avisos-estoque.js';
 
 // Router da CONTA DO CLIENTE FINAL (catálogo). Montado na área pública (antes dos
 // routers do painel). Login/registro/logout são abertos; o resto exige requireCliente
@@ -110,6 +114,19 @@ contaRouter.get('/conta/pedidos', requireCliente, async (req: ClienteRequest, re
     res.json({ pedidos: await listarPedidosCliente(req.cliente!.id) });
   } catch (err) {
     tratarErro(res, err, 'GET /conta/pedidos falhou');
+  }
+});
+
+contaRouter.get('/conta/avisos', requireCliente, async (req: ClienteRequest, res) => {
+  try {
+    const somenteIds = req.query.ids === '1';
+    if (somenteIds) {
+      res.json({ produtoIds: await listarProdutoIdsComAvisoPendente(req.cliente!.id) });
+      return;
+    }
+    res.json({ avisos: await listarAvisosEstoqueCliente(req.cliente!.id) });
+  } catch (err) {
+    tratarErro(res, err, 'GET /conta/avisos falhou');
   }
 });
 
