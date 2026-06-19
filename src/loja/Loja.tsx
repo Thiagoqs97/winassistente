@@ -685,17 +685,23 @@ export default function Loja() {
                     )}
                   </div>
                   <div className="px-3.5 pb-3.5 flex flex-col flex-1 border-t border-slate-100">
-                    {g.marca && (
-                      <div className="mt-3 font-display text-[10px] font-semibold text-gold-600 uppercase tracking-[0.14em] truncate">{g.marca}</div>
-                    )}
-                    <div className="text-[13px] text-slate-800 font-medium leading-snug line-clamp-2 min-h-[2.4rem] mt-0.5">{g.nomeBase}</div>
+                    <div className="min-h-[4.7rem] pt-3">
+                      <div
+                        aria-hidden={!g.marca}
+                        className={`font-display text-[10px] font-semibold text-gold-600 uppercase tracking-[0.14em] truncate ${g.marca ? '' : 'invisible'}`}
+                      >
+                        {g.marca || '-'}
+                      </div>
+                      <div className="text-[13px] text-slate-800 font-medium leading-snug line-clamp-2 min-h-[2.4rem] mt-0.5">{g.nomeBase}</div>
+                    </div>
 
-                    {temVariacoes && (
-                      <div className="mt-3">
-                        <div className="font-display text-[10px] uppercase tracking-[0.14em] text-slate-400 font-semibold mb-1.5">
-                          {rotuloVariacao(g.variacaoTipo)}
-                        </div>
-                        {g.variacoes.length <= 6 ? (
+                    <div className="min-h-[7.2rem] mt-2">
+                      {temVariacoes ? (
+                        <>
+                          <div className="font-display text-[10px] uppercase tracking-[0.14em] text-slate-400 font-semibold mb-1.5">
+                            {rotuloVariacao(g.variacaoTipo)}
+                          </div>
+                          {g.variacoes.length <= 6 ? (
                           <div className="flex flex-wrap gap-1.5">
                             {g.variacoes.map((vv) => (
                               <button
@@ -722,11 +728,14 @@ export default function Loja() {
                               </option>
                             ))}
                           </select>
-                        )}
-                      </div>
-                    )}
+                          )}
+                        </>
+                      ) : (
+                        <div aria-hidden="true" className="h-full" />
+                      )}
+                    </div>
 
-                    <div className="mt-3.5">
+                    <div className="mt-2 min-h-[3.25rem]">
                       {g.precoMin !== g.precoMax && (
                         <span className="block text-[10px] text-slate-400 font-medium uppercase tracking-wide -mb-0.5">a partir de</span>
                       )}
