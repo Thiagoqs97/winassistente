@@ -11,6 +11,7 @@ export interface ClienteAuth {
   fone: string | null;
   cpf_cnpj: string | null;
   tipo_pessoa: string | null;
+  segmento: string | null;
   data_nascimento: string | null;
 }
 
@@ -31,7 +32,7 @@ function extractToken(req: Request): string | null {
 // ativo COM senha_hash (a base importada sem senha não é "logável").
 async function loadCliente(clienteId: string): Promise<ClienteAuth | null> {
   const { rows } = await pool.query(
-    `SELECT id, nome, email, celular, fone, cpf_cnpj, tipo_pessoa,
+    `SELECT id, nome, email, celular, fone, cpf_cnpj, tipo_pessoa, segmento,
             to_char(data_nascimento, 'YYYY-MM-DD') AS data_nascimento
        FROM clientes
       WHERE id = $1 AND ativo = true AND senha_hash IS NOT NULL`,
@@ -47,6 +48,7 @@ async function loadCliente(clienteId: string): Promise<ClienteAuth | null> {
     fone: r.fone,
     cpf_cnpj: r.cpf_cnpj,
     tipo_pessoa: r.tipo_pessoa,
+    segmento: r.segmento,
     data_nascimento: r.data_nascimento,
   };
 }

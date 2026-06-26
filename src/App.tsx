@@ -7,6 +7,7 @@ import { LoginScreen } from './auth/LoginScreen';
 import { hasAnyPermission, PERMISSION_LABELS, PERMISSIONS, type Permission } from './lib/permissions';
 import { InstallPrompt } from './InstallPrompt';
 import { ErrorBoundary } from './ErrorBoundary';
+import { SEGMENTOS_CLIENTE } from './loja/ui';
 
 type TabKey = 'dashboard' | 'kanban' | 'import' | 'products' | 'settings' | 'history' | 'orcamentos' | 'vendas' | 'clientes' | 'users';
 
@@ -1107,7 +1108,7 @@ function ClientesTab() {
     fone: '', celular: '', email: '', email_nfe: '',
     endereco: '', numero: '', complemento: '', bairro: '',
     cep: '', cidade: '', uf: '',
-    tipo_contato: '', vendedor: '', observacoes: '',
+    tipo_contato: '', segmento: '', vendedor: '', observacoes: '',
   };
   const [list, setList] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1250,6 +1251,7 @@ function ClientesTab() {
               <tr className="text-[10px] uppercase text-slate-500">
                 <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold">Nome / Fantasia</th>
                 <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden lg:table-cell">Tipo</th>
+                <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden lg:table-cell">Segmento</th>
                 <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden md:table-cell">CPF/CNPJ</th>
                 <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden md:table-cell">Telefone</th>
                 <th className="px-3 sm:px-4 py-3 sm:py-4 font-bold hidden lg:table-cell">Cidade/UF</th>
@@ -1259,9 +1261,9 @@ function ClientesTab() {
             </thead>
             <tbody className="text-sm">
               {loading ? (
-                <tr><td colSpan={7} className="p-8 text-center text-slate-500">Carregando...</td></tr>
+                <tr><td colSpan={8} className="p-8 text-center text-slate-500">Carregando...</td></tr>
               ) : list.length === 0 ? (
-                <tr><td colSpan={7} className="p-8 text-center text-slate-500">Nenhum cliente encontrado.</td></tr>
+                <tr><td colSpan={8} className="p-8 text-center text-slate-500">Nenhum cliente encontrado.</td></tr>
               ) : list.map(c => (
                 <tr key={c.id} className={cn('border-t border-white/5 hover:bg-white/5 transition-colors', !c.ativo && 'opacity-50')}>
                   <td className="px-3 sm:px-4 py-3">
@@ -1272,6 +1274,7 @@ function ClientesTab() {
                     <p className="text-[10px] text-slate-500 md:hidden mt-0.5">{c.celular || c.fone || c.cpf_cnpj || ''}</p>
                   </td>
                   <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden lg:table-cell">{c.tipo_pessoa || '—'}</td>
+                  <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden lg:table-cell">{c.segmento || '—'}</td>
                   <td className="px-3 sm:px-4 py-3 text-xs font-mono text-slate-400 hidden md:table-cell">{c.cpf_cnpj || '—'}</td>
                   <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden md:table-cell">{c.celular || c.fone || '—'}</td>
                   <td className="px-3 sm:px-4 py-3 text-xs text-slate-400 hidden lg:table-cell">{c.cidade ? `${c.cidade}${c.uf ? '/' + c.uf : ''}` : '—'}</td>
@@ -1397,6 +1400,13 @@ function ClientesTab() {
                   <option value="">—</option>
                   <option value="Pessoa Física">Pessoa Física</option>
                   <option value="Pessoa Jurídica">Pessoa Jurídica</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-1">Segmento / nicho</label>
+                <select value={form.segmento || ''} onChange={(e) => setForm({ ...form, segmento: e.target.value })} className="w-full px-3 py-2 bg-slate-950/50 border border-white/10 rounded-xl text-sm text-white">
+                  <option value="">—</option>
+                  {SEGMENTOS_CLIENTE.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
               {field('cpf_cnpj', 'CPF / CNPJ')}

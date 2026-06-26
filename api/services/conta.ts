@@ -18,7 +18,7 @@ function soDigitos(s: string): string {
 // Perfil que devolvemos ao frontend após login/registro. Nunca inclui senha_hash.
 async function perfilDoCliente(clienteId: string): Promise<ClienteAuth> {
   const { rows } = await pool.query(
-    `SELECT id, nome, email, celular, fone, cpf_cnpj, tipo_pessoa,
+    `SELECT id, nome, email, celular, fone, cpf_cnpj, tipo_pessoa, segmento,
             to_char(data_nascimento, 'YYYY-MM-DD') AS data_nascimento
        FROM clientes WHERE id = $1`,
     [clienteId]
@@ -32,6 +32,7 @@ async function perfilDoCliente(clienteId: string): Promise<ClienteAuth> {
     fone: r.fone,
     cpf_cnpj: r.cpf_cnpj,
     tipo_pessoa: r.tipo_pessoa,
+    segmento: r.segmento,
     data_nascimento: r.data_nascimento,
   };
 }
@@ -42,6 +43,7 @@ export interface RegistrarInput {
   senha: string;
   telefone: string;
   cpf_cnpj?: string;
+  segmento?: string;
 }
 
 // Cadastra a conta do cliente. CPF/CNPJ é OBRIGATÓRIO e é a chave de vínculo:
@@ -55,6 +57,7 @@ export async function registrarCliente(input: RegistrarInput): Promise<{ id: str
   const senha = input.senha ?? '';
   const telefone = (input.telefone ?? '').trim();
   const cpfCnpj = (input.cpf_cnpj ?? '').trim();
+  const segmento = (input.segmento ?? '').trim();
 
   if (nome.length < 2) throw new ContaError('Informe seu nome completo.');
   if (!emailValido(email)) throw new ContaError('Informe um e-mail válido.');
@@ -113,20 +116,21 @@ export async function registrarCliente(input: RegistrarInput): Promise<{ id: str
                 email = $3,
                 celular = COALESCE(NULLIF(celular, ''), $4),
                 cpf_cnpj = COALESCE(NULLIF(cpf_cnpj, ''), $5),
-                senha_hash = $6,
+                segmento = COALESCE($6, segmento),
+                senha_hash = $7,
                 conta_criada_em = NOW(),
                 ativo = true,
                 situacao = 'Ativo',
                 atualizado_em = NOW()
           WHERE id = $1`,
-        [clienteId, nome, email, telefone, cpfCnpj, senhaHash]
+        [clienteId, nome, email, telefone, cpfCnpj, segmento || null, senhaHash]
       );
     } else {
       const novo = await client.query(
-        `INSERT INTO clientes (nome, email, celular, cpf_cnpj, senha_hash, conta_criada_em, situacao, ativo, tipo_pessoa)
-         VALUES ($1, $2, $3, $4, $5, NOW(), 'Ativo', true, $6)
+        `INSERT INTO clientes (nome, email, celular, cpf_cnpj, segmento, senha_hash, conta_criada_em, situacao, ativo, tipo_pessoa)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), 'Ativo', true, $7)
          RETURNING id`,
-        [nome, email, telefone, cpfCnpj, senhaHash, tipoPessoa]
+        [nome, email, telefone, cpfCnpj, segmento || null, senhaHash, tipoPessoa]
       );
       clienteId = novo.rows[0].id;
     }
@@ -168,6 +172,7 @@ export interface PerfilInput {
   data_nascimento?: string | null;
   telefone?: string;
   email?: string;
+  segmento?: string | null;
 }
 
 export async function atualizarPerfil(clienteId: string, input: PerfilInput): Promise<ClienteAuth> {
@@ -201,6 +206,10 @@ export async function atualizarPerfil(clienteId: string, input: PerfilInput): Pr
     const email = String(input.email).trim().toLowerCase();
     if (!emailValido(email)) throw new ContaError('Informe um e-mail válido.');
     push('email', email);
+  }
+  if (input.segmento !== undefined) {
+    const segmento = input.segmento ? String(input.segmento).trim() : null;
+    push('segmento', segmento || null);
   }
 
   if (sets.length === 0) return perfilDoCliente(clienteId);

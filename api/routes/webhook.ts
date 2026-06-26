@@ -833,7 +833,7 @@ ${linhasUltimos}`;
         }
         const allowedFields = [
           'nome','fantasia','tipo_pessoa','cpf_cnpj','fone','celular','email',
-          'endereco','numero','complemento','bairro','cidade','uf','cep','tipo_contato',
+          'endereco','numero','complemento','bairro','cidade','uf','cep','tipo_contato','segmento',
         ];
         const cols: string[] = [];
         const placeholders: string[] = [];
@@ -864,9 +864,14 @@ ${linhasUltimos}`;
       if (fnName === 'editar_cliente') {
         const query = typeof args.query === 'string' ? args.query.trim() : '';
         const campos = (args.campos && typeof args.campos === 'object') ? args.campos : {};
+        const allowedEditFields = new Set([
+          'nome','fantasia','tipo_pessoa','cpf_cnpj','fone','celular','email','email_nfe',
+          'endereco','numero','complemento','bairro','cidade','uf','cep','tipo_contato',
+          'observacoes','segmento',
+        ]);
         const camposLimpos: Record<string, string> = {};
         for (const [k, v] of Object.entries(campos)) {
-          if (typeof v === 'string' && v.trim() !== '') camposLimpos[k] = v.trim();
+          if (allowedEditFields.has(k) && typeof v === 'string' && v.trim() !== '') camposLimpos[k] = v.trim();
         }
         if (!query || Object.keys(camposLimpos).length === 0) {
           await replyAndLog(senderNumber, currentSessionId!, vendedorId,

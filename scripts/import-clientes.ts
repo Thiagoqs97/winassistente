@@ -110,6 +110,9 @@ function parseArquivo(conteudo: string): Cliente[] {
     'Situacao': 'situacao',
     'Data nascimento': 'data_nascimento',
     'Tipo contato': 'tipo_contato',
+    'Segmento': 'segmento',
+    'Nicho': 'segmento',
+    'Tipo de estabelecimento': 'segmento',
     'Vendedor': 'vendedor',
     'Limite de crédito': 'limite_credito',
     'Limite de credito': 'limite_credito',
@@ -191,6 +194,7 @@ async function main() {
         contatos TEXT,
         data_nascimento DATE,
         tipo_contato TEXT,
+        segmento TEXT,
         vendedor TEXT,
         observacoes TEXT,
         regime_tributario TEXT,
@@ -213,7 +217,7 @@ async function main() {
       'externo_id', 'codigo', 'nome', 'fantasia', 'tipo_pessoa', 'cpf_cnpj',
       'ie_rg', 'ie_isento', 'endereco', 'numero', 'complemento', 'bairro', 'cep',
       'cidade', 'uf', 'fone', 'celular', 'email', 'email_nfe', 'contatos',
-      'data_nascimento', 'tipo_contato', 'vendedor', 'observacoes',
+      'data_nascimento', 'tipo_contato', 'segmento', 'vendedor', 'observacoes',
       'regime_tributario', 'cliente_desde', 'limite_credito', 'situacao',
     ];
     await c.query('BEGIN');

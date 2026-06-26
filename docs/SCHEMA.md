@@ -140,6 +140,7 @@ Base importada do Tiny/Bling + cadastros via WhatsApp/painel.
 | `contatos` | TEXT | NULL | Texto livre |
 | `data_nascimento` | DATE | NULL | |
 | `tipo_contato` | TEXT | NULL | "Cliente" / "Fornecedor" / etc. |
+| `segmento` | TEXT | NULL | Nicho comercial do cliente (ex.: Farmácia, Academia, Loja de suplementos); usado nas sugestões inteligentes do carrinho |
 | `vendedor` | TEXT | NULL | Texto livre, vendedor responsável legado |
 | `observacoes` | TEXT | NULL | |
 | `regime_tributario` | TEXT | NULL | |

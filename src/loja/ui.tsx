@@ -9,6 +9,18 @@ export const brl = (n: number) =>
 export const BTN_OURO =
   'bg-gradient-to-b from-gold-300 to-gold-500 hover:from-gold-200 hover:to-gold-600 text-navy-900 shadow-[0_8px_24px_-10px_rgba(207,156,44,0.7)]';
 
+export const SEGMENTOS_CLIENTE = [
+  'Farmácia',
+  'Academia',
+  'Loja de suplementos',
+  'Mercado',
+  'Conveniência',
+  'Clinica',
+  'Revendedor',
+  'E-commerce',
+  'Outro',
+];
+
 export type IconProps = { className?: string };
 
 export function IconSearch({ className = '' }: IconProps) {

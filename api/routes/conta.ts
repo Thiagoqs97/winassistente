@@ -67,8 +67,8 @@ contaRouter.post('/conta/registrar', async (req, res) => {
     return;
   }
   try {
-    const { nome, email, senha, telefone, cpf_cnpj } = req.body ?? {};
-    const { id, cliente } = await registrarCliente({ nome, email, senha, telefone, cpf_cnpj });
+    const { nome, email, senha, telefone, cpf_cnpj, segmento } = req.body ?? {};
+    const { id, cliente } = await registrarCliente({ nome, email, senha, telefone, cpf_cnpj, segmento });
     setClienteCookie(res, signClienteToken(id));
     res.status(201).json({ cliente });
   } catch (err) {

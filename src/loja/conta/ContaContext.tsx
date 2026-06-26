@@ -10,6 +10,7 @@ export interface Cliente {
   fone: string | null;
   cpf_cnpj: string | null;
   tipo_pessoa: string | null;
+  segmento: string | null;
   data_nascimento: string | null;
 }
 
@@ -19,6 +20,7 @@ export interface RegistrarDados {
   senha: string;
   telefone: string;
   cpf_cnpj?: string;
+  segmento?: string;
 }
 
 interface ContaCtx {

@@ -254,6 +254,7 @@ async function initDB(): Promise<void> {
         contatos TEXT,
         data_nascimento DATE,
         tipo_contato TEXT,
+        segmento TEXT,
         vendedor TEXT,
         observacoes TEXT,
         regime_tributario TEXT,
@@ -265,11 +266,13 @@ async function initDB(): Promise<void> {
         atualizado_em TIMESTAMP
       );
     `);
+    await client.query(`ALTER TABLE clientes ADD COLUMN IF NOT EXISTS segmento TEXT;`);
     await client.query(`CREATE INDEX IF NOT EXISTS trgm_idx_clientes_nome ON clientes USING GIN (lower(nome) gin_trgm_ops);`);
     await client.query(`CREATE INDEX IF NOT EXISTS trgm_idx_clientes_fantasia ON clientes USING GIN (lower(coalesce(fantasia, '')) gin_trgm_ops);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_clientes_cpf_cnpj ON clientes(cpf_cnpj);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_clientes_externo_id ON clientes(externo_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_clientes_ativo_nome ON clientes(ativo, lower(nome));`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_clientes_segmento_cidade ON clientes(lower(coalesce(segmento, '')), lower(coalesce(cidade, '')), upper(coalesce(uf, ''))) WHERE ativo;`);
 
     // --- Conta do cliente no catálogo online ---
     // A conta do cliente final É um registro de `clientes`: quando o cliente se

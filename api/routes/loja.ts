@@ -6,6 +6,7 @@ import {
   listarCategoriasLoja,
   listarMarcasLoja,
   criarPedidoCatalogo,
+  sugerirProdutosCarrinho,
   PedidoInvalidoError,
 } from '../services/loja.js';
 import {
@@ -89,6 +90,21 @@ lojaRouter.post('/loja/pedido', requireCliente, async (req: ClienteRequest, res)
     }
     logger.error('POST /loja/pedido falhou', { err: err?.message });
     res.status(500).json({ error: 'Não consegui registrar o pedido. Tente novamente.' });
+  }
+});
+
+lojaRouter.post('/loja/sugestoes-carrinho', requireCliente, async (req: ClienteRequest, res) => {
+  try {
+    const { itens, limite } = req.body ?? {};
+    const sugestoes = await sugerirProdutosCarrinho({
+      clienteId: req.cliente!.id,
+      itens: Array.isArray(itens) ? itens : [],
+      limite: limite ? Number(limite) : undefined,
+    });
+    res.json({ sugestoes });
+  } catch (err: any) {
+    logger.error('POST /loja/sugestoes-carrinho falhou', { err: err?.message });
+    res.status(500).json({ error: 'NÃ£o consegui carregar as sugestÃµes.' });
   }
 });
 

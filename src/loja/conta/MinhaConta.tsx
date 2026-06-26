@@ -3,7 +3,7 @@ import { apiFetch, ApiError } from '../../lib/api';
 import { navegar } from '../nav';
 import { useConta, type Cliente } from './ContaContext';
 import {
-  brl, BTN_OURO, Wordmark,
+  brl, BTN_OURO, SEGMENTOS_CLIENTE, Wordmark,
   IconArrowLeft, IconReceipt, IconUser, IconPin, IconLogout,
   IconPlus, IconTrash, IconCheck, IconSpinner, IconBox,
 } from '../ui';
@@ -270,6 +270,7 @@ function Dados() {
   const [email, setEmail] = useState(cliente?.email ?? '');
   const [telefone, setTelefone] = useState(cliente?.celular ?? '');
   const [cpfCnpj, setCpfCnpj] = useState(cliente?.cpf_cnpj ?? '');
+  const [segmento, setSegmento] = useState(cliente?.segmento ?? '');
   const [nascimento, setNascimento] = useState(cliente?.data_nascimento ?? '');
   const [salvando, setSalvando] = useState(false);
   const [msg, setMsg] = useState<{ tom: 'ok' | 'erro'; texto: string } | null>(null);
@@ -286,6 +287,7 @@ function Dados() {
           email,
           telefone,
           cpf_cnpj: cpfCnpj,
+          segmento,
           data_nascimento: nascimento || null,
         }),
       });
@@ -313,6 +315,12 @@ function Dados() {
           <input value={telefone} onChange={(e) => setTelefone(e.target.value)} inputMode="tel" className={campo} /></label>
         <label><span className={rotulo}>CPF / CNPJ</span>
           <input value={cpfCnpj} onChange={(e) => setCpfCnpj(e.target.value)} className={campo} /></label>
+        <label><span className={rotulo}>Tipo de estabelecimento</span>
+          <select value={segmento} onChange={(e) => setSegmento(e.target.value)} className={campo}>
+            <option value="">Selecione</option>
+            {SEGMENTOS_CLIENTE.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
         <label><span className={rotulo}>Nascimento</span>
           <input type="date" value={nascimento} onChange={(e) => setNascimento(e.target.value)} className={campo} /></label>
       </div>

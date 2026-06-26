@@ -99,6 +99,22 @@ export interface GrupoLoja {
 // categoria/marca) é resolvido por GRUPO: se qualquer SKU do grupo casa, o card
 // volta com TODAS as variações (ex.: buscar "shark pro" mostra todos os sabores).
 // Os ids retornados são os SKUs reais — o pedido continua operando por SKU.
+export interface SugestaoCarrinho {
+  id: number;
+  nomeBase: string;
+  descricao: string;
+  marca: string | null;
+  variacao: string | null;
+  variacaoTipo: string | null;
+  grupoChave: string | null;
+  preco: number;
+  imagemUrl: string | null;
+  motivo: string;
+  escopo: string;
+  qtdVendida: number;
+  pedidos: number;
+}
+
 export async function listarProdutosLoja(opts: {
   q?: string;
   categoria?: string;
@@ -229,6 +245,197 @@ export async function listarMarcasLoja(): Promise<{ marca: string; total: number
       AND marca IS NOT NULL AND marca <> ''
     GROUP BY marca ORDER BY total DESC, marca`);
   return rows.map((r) => ({ marca: r.marca, total: r.total }));
+}
+
+function normalizarTexto(s: string | null | undefined): string {
+  return (s ?? '').trim().toLowerCase();
+}
+
+async function contextoClienteSugestao(clienteId: string): Promise<{
+  segmento: string;
+  cidade: string;
+  uf: string;
+}> {
+  const { rows } = await pool.query(
+    `SELECT
+       coalesce(nullif(c.segmento, ''), '') AS segmento,
+       coalesce(nullif(c.cidade, ''), nullif(e.cidade, ''), '') AS cidade,
+       coalesce(nullif(c.uf, ''), nullif(e.uf, ''), '') AS uf
+     FROM clientes c
+     LEFT JOIN cliente_enderecos e ON e.cliente_id = c.id AND e.principal = true
+     WHERE c.id = $1 AND c.ativo = true
+     LIMIT 1`,
+    [clienteId]
+  );
+  const r = rows[0] ?? {};
+  return {
+    segmento: normalizarTexto(r.segmento),
+    cidade: normalizarTexto(r.cidade),
+    uf: String(r.uf ?? '').trim().toUpperCase(),
+  };
+}
+
+type EscopoSugestao = {
+  escopo: string;
+  motivo: string;
+  where: string[];
+  vals: any[];
+};
+
+function montarEscoposSugestao(ctx: { segmento: string; cidade: string; uf: string }): EscopoSugestao[] {
+  const escopos: EscopoSugestao[] = [];
+  if (ctx.segmento && ctx.cidade && ctx.uf) {
+    escopos.push({
+      escopo: `${ctx.segmento} em ${ctx.cidade}/${ctx.uf}`,
+      motivo: `Alta saida para ${ctx.segmento} na sua cidade`,
+      where: [
+        "unaccent(lower(coalesce(c.segmento, ''))) = unaccent(lower(?))",
+        "unaccent(lower(coalesce(nullif(c.cidade, ''), nullif(e.cidade, ''), ''))) = unaccent(lower(?))",
+        "upper(coalesce(nullif(c.uf, ''), nullif(e.uf, ''), '')) = ?",
+      ],
+      vals: [ctx.segmento, ctx.cidade, ctx.uf],
+    });
+  }
+  if (ctx.segmento && ctx.uf) {
+    escopos.push({
+      escopo: `${ctx.segmento} no estado`,
+      motivo: 'Muito pedido por clientes do seu segmento',
+      where: [
+        "unaccent(lower(coalesce(c.segmento, ''))) = unaccent(lower(?))",
+        "upper(coalesce(nullif(c.uf, ''), nullif(e.uf, ''), '')) = ?",
+      ],
+      vals: [ctx.segmento, ctx.uf],
+    });
+  }
+  if (ctx.segmento) {
+    escopos.push({
+      escopo: ctx.segmento,
+      motivo: 'Campeao de venda no seu segmento',
+      where: ["unaccent(lower(coalesce(c.segmento, ''))) = unaccent(lower(?))"],
+      vals: [ctx.segmento],
+    });
+  }
+  if (ctx.cidade && ctx.uf) {
+    escopos.push({
+      escopo: `${ctx.cidade}/${ctx.uf}`,
+      motivo: 'Entre os mais vendidos na sua cidade',
+      where: [
+        "unaccent(lower(coalesce(nullif(c.cidade, ''), nullif(e.cidade, ''), ''))) = unaccent(lower(?))",
+        "upper(coalesce(nullif(c.uf, ''), nullif(e.uf, ''), '')) = ?",
+      ],
+      vals: [ctx.cidade, ctx.uf],
+    });
+  }
+  escopos.push({
+    escopo: 'WIN',
+    motivo: 'Entre os mais vendidos da WIN',
+    where: [],
+    vals: [],
+  });
+  return escopos;
+}
+
+async function buscarSugestoesPorEscopo(
+  escopo: EscopoSugestao,
+  excluirIds: number[],
+  limite: number
+): Promise<SugestaoCarrinho[]> {
+  const params: any[] = [excluirIds, limite];
+  const whereExtra: string[] = [];
+  escopo.where.forEach((clause, idx) => {
+    params.push(escopo.vals[idx]);
+    whereExtra.push(clause.replace('?', `$${params.length}`));
+  });
+  const whereEscopo = whereExtra.length ? `AND ${whereExtra.join(' AND ')}` : '';
+
+  const { rows } = await pool.query(
+    `WITH carrinho AS (
+       SELECT id, grupo_chave FROM products WHERE id = ANY($1::int[])
+     )
+     SELECT
+       p.id,
+       p.descricao,
+       coalesce(p.nome_base, p.descricao) AS nome_base,
+       p.marca,
+       p.variacao,
+       p.variacao_tipo,
+       p.grupo_chave,
+       p.preco_venda::float AS preco,
+       p.imagem_url,
+       SUM((item->>'qtd')::numeric)::float AS qtd_vendida,
+       COUNT(DISTINCT o.id)::int AS pedidos
+     FROM orcamentos o
+     JOIN clientes c ON c.id = o.cliente_id
+     LEFT JOIN cliente_enderecos e ON e.cliente_id = c.id AND e.principal = true
+     CROSS JOIN LATERAL jsonb_array_elements(o.itens) AS item
+     JOIN products p ON lower(p.descricao) = lower(item->>'descricao')
+     WHERE o.status = 'venda'
+       AND p.ativo = true
+       AND p.preco_venda IS NOT NULL
+       AND p.preco_venda > 0
+       AND (p.estoque_saldo IS NULL OR p.estoque_saldo > 0)
+       AND NOT (p.id = ANY($1::int[]))
+       AND NOT EXISTS (
+         SELECT 1 FROM carrinho ca
+         WHERE ca.grupo_chave IS NOT NULL
+           AND ca.grupo_chave <> ''
+           AND ca.grupo_chave = p.grupo_chave
+       )
+       ${whereEscopo}
+     GROUP BY p.id, p.descricao, p.nome_base, p.marca, p.variacao, p.variacao_tipo, p.grupo_chave, p.preco_venda, p.imagem_url
+     ORDER BY pedidos DESC, qtd_vendida DESC, lower(coalesce(p.nome_base, p.descricao))
+     LIMIT $2`,
+    params
+  );
+
+  return rows.map((r) => ({
+    id: Number(r.id),
+    nomeBase: r.nome_base,
+    descricao: r.descricao,
+    marca: r.marca,
+    variacao: r.variacao,
+    variacaoTipo: r.variacao_tipo,
+    grupoChave: r.grupo_chave,
+    preco: Number(r.preco),
+    imagemUrl: r.imagem_url,
+    motivo: escopo.motivo,
+    escopo: escopo.escopo,
+    qtdVendida: Number(r.qtd_vendida) || 0,
+    pedidos: Number(r.pedidos) || 0,
+  }));
+}
+
+// Sugestoes de "complete seu mix": cruza o carrinho com os campeoes de venda de
+// clientes parecidos. A hierarquia evita tela vazia: segmento+cidade -> segmento
+// no estado -> segmento geral -> cidade -> global.
+export async function sugerirProdutosCarrinho(opts: {
+  clienteId: string;
+  itens: ItemPedidoInput[];
+  limite?: number;
+}): Promise<SugestaoCarrinho[]> {
+  const limite = Math.min(Math.max(opts.limite ?? 6, 1), 10);
+  const idsCarrinho = [...new Set((opts.itens ?? [])
+    .map((it) => Number(it?.produtoId))
+    .filter((id) => Number.isInteger(id) && id > 0))];
+  if (!opts.clienteId || idsCarrinho.length === 0) return [];
+
+  const ctx = await contextoClienteSugestao(opts.clienteId);
+  const escopos = montarEscoposSugestao(ctx);
+  const saida: SugestaoCarrinho[] = [];
+  const usados = new Set<number>(idsCarrinho);
+
+  for (const escopo of escopos) {
+    if (saida.length >= limite) break;
+    const lote = await buscarSugestoesPorEscopo(escopo, [...usados], limite - saida.length);
+    for (const s of lote) {
+      if (usados.has(s.id)) continue;
+      usados.add(s.id);
+      saida.push(s);
+      if (saida.length >= limite) break;
+    }
+  }
+
+  return saida;
 }
 
 async function getVendedorCatalogoId(): Promise<string> {

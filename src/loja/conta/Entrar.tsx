@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ApiError } from '../../lib/api';
 import { navegar } from '../nav';
 import { useConta } from './ContaContext';
-import { BTN_OURO, IconArrowLeft, IconSpinner, IconUser, IconMail, IconLock, IconCheck, Wordmark } from '../ui';
+import { BTN_OURO, SEGMENTOS_CLIENTE, IconArrowLeft, IconSpinner, IconUser, IconMail, IconLock, IconCheck, Wordmark } from '../ui';
 
 type Modo = 'entrar' | 'criar';
 
@@ -36,6 +36,7 @@ export default function Entrar() {
   const [email, setEmail] = useState('');
   const [telefone, setTelefone] = useState('');
   const [cpfCnpj, setCpfCnpj] = useState('');
+  const [segmento, setSegmento] = useState('');
   const [senha, setSenha] = useState('');
 
   const [erro, setErro] = useState<string | null>(null);
@@ -59,7 +60,7 @@ export default function Entrar() {
       if (modo === 'entrar') {
         await login(email, senha);
       } else {
-        await registrar({ nome, email, senha, telefone, cpf_cnpj: cpfCnpj });
+        await registrar({ nome, email, senha, telefone, cpf_cnpj: cpfCnpj, segmento });
       }
       navegar(destinoPosLogin());
     } catch (err: any) {
@@ -182,6 +183,17 @@ export default function Entrar() {
                       inputMode="numeric"
                       className={inputBase}
                     />
+                  </div>
+                  <div className="relative">
+                    <IconUser className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <select
+                      value={segmento}
+                      onChange={(e) => setSegmento(e.target.value)}
+                      className={`${inputBase} appearance-none bg-white`}
+                    >
+                      <option value="">Tipo de estabelecimento</option>
+                      {SEGMENTOS_CLIENTE.map((s) => <option key={s} value={s}>{s}</option>)}
+                    </select>
                   </div>
                 </>
               )}

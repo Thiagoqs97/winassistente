@@ -12,7 +12,7 @@ const FIELDS = [
   'externo_id', 'codigo', 'nome', 'fantasia', 'tipo_pessoa', 'cpf_cnpj',
   'ie_rg', 'ie_isento', 'endereco', 'numero', 'complemento', 'bairro', 'cep',
   'cidade', 'uf', 'fone', 'celular', 'email', 'email_nfe', 'contatos',
-  'data_nascimento', 'tipo_contato', 'vendedor', 'observacoes',
+  'data_nascimento', 'tipo_contato', 'segmento', 'vendedor', 'observacoes',
   'regime_tributario', 'cliente_desde', 'limite_credito', 'situacao',
 ];
 
@@ -39,7 +39,7 @@ clientesRouter.get('/clientes', requirePermission('clientes.view'), async (req, 
     params.push(limit, offset);
 
     const { rows } = await pool.query(
-      `SELECT id, externo_id, nome, fantasia, tipo_pessoa, cpf_cnpj, cidade, uf,
+      `SELECT id, externo_id, nome, fantasia, tipo_pessoa, cpf_cnpj, segmento, cidade, uf,
               fone, celular, email, ativo, criado_em
        FROM clientes
        ${where}

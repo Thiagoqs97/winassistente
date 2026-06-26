@@ -49,6 +49,19 @@ interface ResultadoPedido {
   clienteNome: string;
 }
 
+interface SugestaoCarrinho {
+  id: number;
+  nomeBase: string;
+  descricao: string;
+  marca: string | null;
+  variacao: string | null;
+  preco: number;
+  imagemUrl: string | null;
+  motivo: string;
+  escopo: string;
+  pedidos: number;
+}
+
 interface EnderecoResumo {
   id: string;
   apelido: string | null;
@@ -132,6 +145,8 @@ export default function Loja() {
   const [pedido, setPedido] = useState<ResultadoPedido | null>(null);
   const [avisosIds, setAvisosIds] = useState<Set<number>>(new Set());
   const [avisosLoading, setAvisosLoading] = useState<Record<number, boolean>>({});
+  const [sugestoes, setSugestoes] = useState<SugestaoCarrinho[]>([]);
+  const [sugestoesLoading, setSugestoesLoading] = useState(false);
 
   const produtosRef = useRef<HTMLDivElement>(null);
 
@@ -251,12 +266,48 @@ export default function Loja() {
     });
   };
 
+  const adicionarSugestao = (s: SugestaoCarrinho) => {
+    setQtd({
+      id: s.id,
+      nomeBase: s.nomeBase,
+      marca: s.marca,
+      variacao: s.variacao,
+      preco: s.preco,
+      imagem: s.imagemUrl,
+    }, (carrinho[s.id]?.qtd ?? 0) + 1);
+  };
+
   const itensCarrinho = useMemo(() => Object.values(carrinho), [carrinho]);
   const totalItens = useMemo(() => itensCarrinho.reduce((s, i) => s + i.qtd, 0), [itensCarrinho]);
   const totalCarrinho = useMemo(
     () => itensCarrinho.reduce((s, i) => s + i.preco * i.qtd, 0),
     [itensCarrinho]
   );
+
+  useEffect(() => {
+    if (!cliente || itensCarrinho.length === 0) {
+      setSugestoes([]);
+      return;
+    }
+    let vivo = true;
+    const t = setTimeout(() => {
+      setSugestoesLoading(true);
+      apiFetch<{ sugestoes: SugestaoCarrinho[] }>('/api/loja/sugestoes-carrinho', {
+        method: 'POST',
+        body: JSON.stringify({
+          itens: itensCarrinho.map((i) => ({ produtoId: i.id, qtd: i.qtd })),
+          limite: 6,
+        }),
+      })
+        .then((r) => { if (vivo) setSugestoes(r.sugestoes ?? []); })
+        .catch(() => { if (vivo) setSugestoes([]); })
+        .finally(() => { if (vivo) setSugestoesLoading(false); });
+    }, 250);
+    return () => {
+      vivo = false;
+      clearTimeout(t);
+    };
+  }, [cliente, itensCarrinho]);
 
   // Desvia pro login guardando a intenção de finalizar (sessionStorage). Ao
   // voltar logado, o efeito de CHECKOUT_PENDENTE reabre o carrinho no checkout.
@@ -911,6 +962,42 @@ export default function Loja() {
                     </div>
                   </div>
                 ))}
+                {(sugestoesLoading || sugestoes.length > 0) && (
+                  <div className="mt-5 rounded-2xl border border-gold-200 bg-gold-50/70 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-display uppercase tracking-[0.16em] text-[10px] text-gold-700 font-bold">Complete seu mix</p>
+                        <h3 className="font-display uppercase tracking-tight text-lg font-bold text-ink mt-0.5">Produtos em alta para seu perfil</h3>
+                      </div>
+                      {sugestoesLoading && <IconSpinner className="w-5 h-5 text-gold-700 shrink-0" />}
+                    </div>
+                    {sugestoes.length > 0 && (
+                      <div className="mt-3 space-y-2.5">
+                        {sugestoes.map((s) => (
+                          <div key={s.id} className="rounded-xl bg-white border border-gold-100 p-2.5 flex gap-2.5 items-center">
+                            <div className="w-12 h-12 rounded-lg bg-slate-50 border border-slate-100 flex items-center justify-center overflow-hidden shrink-0">
+                              {s.imagemUrl ? <img src={s.imagemUrl} alt="" className="w-full h-full object-contain" /> : <IconBox className="w-6 h-6 text-slate-300" />}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs font-semibold text-slate-800 line-clamp-2">{s.nomeBase}{s.variacao ? <span className="text-slate-400"> · {s.variacao}</span> : null}</p>
+                              {s.marca && <p className="text-[10px] text-gold-700 font-bold uppercase tracking-wide truncate">{s.marca}</p>}
+                              <p className="text-[10px] text-slate-500 mt-0.5">{s.motivo}{s.pedidos > 0 ? ` · ${s.pedidos} pedido(s)` : ''}</p>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <p className="font-display font-bold text-ink text-sm">{brl(s.preco)}</p>
+                              <button
+                                onClick={() => adicionarSugestao(s)}
+                                className="mt-1 rounded-lg bg-navy-700 hover:bg-navy-800 text-white text-xs font-semibold px-3 py-1.5 transition"
+                              >
+                                Adicionar
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
